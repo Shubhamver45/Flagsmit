@@ -77,9 +77,17 @@ PENDING ──> STAGE_1 (1%) ──> STAGE_2 (5%) ──> STAGE_3 (25%) ──> 
 * [`guardian/state_machine.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/state_machine.py): State machine logic enforcing soak time, metric threshold breaches, and human-in-the-loop approval.
 * [`guardian/flagsmith_client.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/flagsmith_client.py): Admin API client for percentage rollouts and 0% rollbacks verified against self-hosted Flagsmith.
 * [`guardian/audit_log.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/audit_log.py): Append-only audit trail logging every decision, reason, and numerical evidence.
+* [`guardian/metrics/`](file:///Users/shubham/Desktop/Flagsmit/guardian/metrics/): Unified metric source providers:
+  * `PrometheusMetricSource`: PromQL evaluator with minimum sample size gating.
+  * `FlagsmithExperimentMetricSource`: Bayesian chance-to-be-worse inference, SRM warning enforcement, and 300s refresh cooldown.
+  * `CompositeMetricProvider`: Dispatcher routing guardrail queries across sources.
 * [`guardian/engine.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/engine.py): Unified orchestration engine.
 
-### Running Unit Tests
+### Running Unit Tests & Live Metric Verifications
 ```bash
+# Run complete unit test suite (18 tests)
 python3 -m pytest -v tests/
+
+# Run live metric verification against running demo app and Prometheus
+PYTHONPATH=. python3 scripts/test_live_metrics.py
 ```

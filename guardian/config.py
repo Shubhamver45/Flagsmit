@@ -12,10 +12,15 @@ import yaml
 @dataclass(frozen=True)
 class Guardrail:
     name: str
-    metric_source: str  # e.g., 'prometheus', 'clickhouse', 'mock'
+    metric_source: str  # e.g., 'prometheus', 'flagsmith_experiment', 'mock'
     comparison: str     # e.g., '>', '>=', '<', '<=', '==', '!='
     threshold: float
     query: Optional[str] = None
+    sample_size_query: Optional[str] = None
+    min_samples: int = 30
+    experiment_id: Optional[int] = None
+    metric_id: Optional[int] = None
+    action_on_srm: str = "ROLLBACK"  # ROLLBACK or HOLD
     description: str = ""
 
     def evaluate(self, current_value: float) -> bool:
@@ -71,6 +76,11 @@ def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
             comparison=g.get("comparison", ">"),
             threshold=float(g["threshold"]),
             query=g.get("query"),
+            sample_size_query=g.get("sample_size_query"),
+            min_samples=int(g.get("min_samples", 30)),
+            experiment_id=g.get("experiment_id"),
+            metric_id=g.get("metric_id"),
+            action_on_srm=g.get("action_on_srm", "ROLLBACK"),
             description=g.get("description", ""),
         )
         for g in raw_guardrails

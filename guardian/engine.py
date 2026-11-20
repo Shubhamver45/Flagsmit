@@ -36,20 +36,31 @@ class GuardianEngine:
     def tick(
         self,
         metric_values: Optional[Dict[str, float]] = None,
+        evaluations: Optional[list] = None,
         now: Optional[float] = None,
     ) -> AuditEntry:
         """
         Executes one evaluation cycle:
-        1. Reads metrics.
+        1. Reads metrics via CompositeMetricProvider or callable.
         2. Steps the state machine.
         3. Enforces the action on Flagsmith (advance, rollback, hold).
         4. Appends decision and numerical evidence to audit log.
         """
-        if metric_values is None:
-            metric_values = self.metric_provider()
+        if evaluations is None and hasattr(self.metric_provider, "evaluate_all"):
+            evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
+        elif metric_values is None and callable(self.metric_provider):
+            res = self.metric_provider()
+            if isinstance(res, list):
+                evaluations = res
+            elif isinstance(res, dict):
+                metric_values = res
 
         prev_state = self.state_machine.current_state
-        new_state, decision, reason, numbers = self.state_machine.evaluate(metric_values, now=now)
+        new_state, decision, reason, numbers = self.state_machine.evaluate(
+            metric_values=metric_values,
+            evaluations=evaluations,
+            now=now,
+        )
 
         # Apply actions to Flagsmith flag
         if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):

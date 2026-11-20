@@ -70,14 +70,17 @@ class RolloutStateMachine:
 
     def evaluate(
         self,
-        metric_values: Dict[str, float],
+        metric_values: Optional[Dict[str, float]] = None,
+        evaluations: Optional[List[Any]] = None,
         now: Optional[float] = None,
     ) -> Tuple[str, RolloutDecision, str, Dict[str, Any]]:
         """
         Evaluates current metrics and soak time against guardrails.
+        Supports structured MetricEvaluation objects or raw metric_values dictionary.
         Returns: (new_state, decision, reason, numbers)
         """
         now = now if now is not None else time.time()
+        metric_values = metric_values or {}
 
         # Terminal states do not progress automatically
         if self.current_state in (RolloutState.PROMOTED.value, RolloutState.ROLLED_BACK.value):
@@ -88,7 +91,26 @@ class RolloutStateMachine:
         if self.current_state == RolloutState.PENDING.value:
             return self.start(now=now)
 
-        # 1. Guardrail Evaluation
+        # 1. Guardrail Evaluation from structured evaluations (if provided)
+        insufficient_data_reasons = []
+        if evaluations:
+            for ev in evaluations:
+                if ev.is_breached:
+                    prev_state = self.current_state
+                    self.current_state = RolloutState.ROLLED_BACK.value
+                    numbers = {
+                        "metric_name": ev.name,
+                        "metric_value": ev.value,
+                        "sample_size": ev.sample_size,
+                        "stage_index": self.current_stage_index,
+                        "rolled_back_from_percentage": self.current_percentage,
+                        "details": ev.details,
+                    }
+                    return self.current_state, RolloutDecision.ROLLBACK, ev.reason, numbers
+                if getattr(ev, "status", None) and ev.status.value == "INSUFFICIENT_DATA":
+                    insufficient_data_reasons.append(ev.reason)
+
+        # Fallback to evaluating raw metric_values dictionary
         for guardrail in self.config.guardrails:
             val = metric_values.get(guardrail.name)
             if val is not None:
@@ -109,6 +131,16 @@ class RolloutStateMachine:
                         f"Observed value {val} {guardrail.comparison} threshold {guardrail.threshold}."
                     )
                     return self.current_state, RolloutDecision.ROLLBACK, reason, numbers
+
+        # 2. Minimum Sample Size Check (Insufficent data forces HOLD)
+        if insufficient_data_reasons:
+            numbers = {
+                "stage_index": self.current_stage_index,
+                "current_percentage": self.current_percentage,
+                "insufficient_reasons": insufficient_data_reasons,
+            }
+            reason = f"Holding stage {self.current_state} due to insufficient sample size: {insufficient_data_reasons[0]}"
+            return self.current_state, RolloutDecision.HOLD, reason, numbers
 
         # 2. If AWAITING_APPROVAL, check if human approval was granted
         if self.current_state == RolloutState.AWAITING_APPROVAL.value:
