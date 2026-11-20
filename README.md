@@ -10,7 +10,24 @@ Guardian is a Python service running alongside self-hosted Flagsmith that automa
 - **Flagsmith (Self-Hosted)**: Feature flag engine, multivariate weighting, and Bayesian experimentation (`http://localhost:8000`).
 - **ClickHouse Warehouse**: High-throughput telemetry and experimentation event store (`http://localhost:8123`, DB `flagsmith_exp`).
 - **PostgreSQL**: Primary Flagsmith relational store.
+- **Demo Checkout App (Flask)**: Gated checkout service evaluated with Flagsmith flag `new_checkout` (`http://localhost:5001`).
+- **Prometheus**: Metric collection and scraping (`http://localhost:9090`).
 - **Guardian Service (FastAPI / Python 3.12)**: The orchestration engine for phased rollouts and guardrail evaluations.
+
+---
+
+## Demo App & Traffic Simulator
+
+The demo checkout app simulates an e-commerce checkout flow gated by Flagsmith feature flag `new_checkout`:
+* **OFF (`old_flow`)**: Legacy checkout flow (100% success rate).
+* **ON (`new_flow`)**: Modernized checkout flow with simulated failure mode (`BUG_IN_NEW_CHECKOUT=1` produces ~30% payment gateway failures).
+* **Metrics**: Real-time Prometheus metrics exported at `http://localhost:5001/metrics` and scraped by Prometheus at `http://localhost:9090`.
+
+### Running Traffic Simulator
+```bash
+python3 demo/simulator.py
+```
+This sends traffic across 200 distinct user identities and aggregates client-side vs. Prometheus-scraped error rates per flag variant.
 
 ---
 
