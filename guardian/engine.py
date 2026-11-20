@@ -165,6 +165,24 @@ class GuardianEngine:
 
         return entry
 
+    def reset(self) -> AuditEntry:
+        """
+        Resets rollout state back to PENDING (0%) and clears idempotency tracking.
+        """
+        prev_state = self.state_machine.current_state
+        self.state_machine = RolloutStateMachine(self.config)
+        self.idempotency_manager.reset()
+        self.flagsmith_client.set_percentage_rollout(self.config.flag_name, 0.0)
+        entry = self.audit_logger.record(
+            flag_name=self.config.flag_name,
+            from_state=prev_state,
+            to_state=self.state_machine.current_state,
+            decision="ADVANCE",
+            reason="Rollout state reset to initial PENDING by operator.",
+            numbers={"percentage": 0.0},
+        )
+        return entry
+
     def get_status(self) -> Dict[str, Any]:
         guardrail_reports = []
         if self.latest_evaluations:

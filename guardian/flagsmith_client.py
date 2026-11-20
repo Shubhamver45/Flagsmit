@@ -15,6 +15,9 @@ class FlagsmithClientProtocol(Protocol):
     def get_environment_feature_state(self, flag_name: str) -> Dict[str, Any]:
         ...
 
+    def get_percentage_rollout(self, flag_name: str) -> float:
+        ...
+
     def set_percentage_rollout(self, flag_name: str, percentage: float) -> Dict[str, Any]:
         ...
 
@@ -71,6 +74,18 @@ class FlagsmithAdminClient:
         if not results:
             raise ValueError(f"FeatureState for '{flag_name}' not found in environment {self.environment_key}")
         return results[0]
+
+    def get_percentage_rollout(self, flag_name: str) -> float:
+        """
+        Retrieves current multivariate rollout percentage from Flagsmith.
+        """
+        fs = self.get_environment_feature_state(flag_name)
+        if not fs.get("enabled", False):
+            return 0.0
+        mv_values = fs.get("multivariate_feature_state_values", [])
+        if mv_values:
+            return float(mv_values[0].get("percentage_allocation", 0.0))
+        return 100.0 if fs.get("enabled", False) else 0.0
 
     def set_percentage_rollout(self, flag_name: str, percentage: float) -> Dict[str, Any]:
         """

@@ -34,6 +34,12 @@ CHECKOUT_ERRORS_TOTAL = Counter(
     ["variant"]
 )
 
+# Initialize zero metrics for both variants so series always exist in Prometheus
+for v in ("old_flow", "new_flow"):
+    CHECKOUT_ERRORS_TOTAL.labels(variant=v)
+    for s in ("200", "500"):
+        CHECKOUT_REQUESTS_TOTAL.labels(variant=v, status=s)
+
 @app.route("/checkout", methods=["POST", "GET"])
 def checkout():
     # Support GET or POST, with JSON body or query param
@@ -73,6 +79,28 @@ def checkout():
 @app.route("/metrics")
 def metrics():
     return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
+
+@app.route("/toggle-bug", methods=["POST", "GET"])
+def toggle_bug():
+    global BUG_IN_NEW_CHECKOUT
+    val = request.args.get("enabled")
+    if val is not None:
+        BUG_IN_NEW_CHECKOUT = val.lower() in ("1", "true", "yes")
+    else:
+        BUG_IN_NEW_CHECKOUT = not BUG_IN_NEW_CHECKOUT
+    logger.info(f"BUG_IN_NEW_CHECKOUT toggled to {BUG_IN_NEW_CHECKOUT}")
+    return jsonify({"bug_enabled": BUG_IN_NEW_CHECKOUT}), 200
+
+@app.route("/reset-metrics", methods=["POST", "GET"])
+def reset_metrics():
+    CHECKOUT_REQUESTS_TOTAL.clear()
+    CHECKOUT_ERRORS_TOTAL.clear()
+    for v in ("old_flow", "new_flow"):
+        CHECKOUT_ERRORS_TOTAL.labels(variant=v)
+        for s in ("200", "500"):
+            CHECKOUT_REQUESTS_TOTAL.labels(variant=v, status=s)
+    logger.info("Prometheus counter metrics cleared and zero-initialized")
+    return jsonify({"status": "metrics_cleared"}), 200
 
 @app.route("/health")
 def health():

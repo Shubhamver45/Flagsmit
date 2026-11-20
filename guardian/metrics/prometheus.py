@@ -50,14 +50,18 @@ class PrometheusMetricSource:
             # 2. Main Metric Query
             value = self._query_scalar(query)
             if value is None:
-                return MetricEvaluation(
-                    name=guardrail.name,
-                    value=None,
-                    sample_size=sample_size,
-                    is_breached=False,
-                    status=MetricStatus.INSUFFICIENT_DATA,
-                    reason="PromQL query returned no data; holding",
-                )
+                # If error query returned no data but sample size is satisfied, 0 errors occurred
+                if sample_size >= min_samples and "error" in query.lower():
+                    value = 0.0
+                else:
+                    return MetricEvaluation(
+                        name=guardrail.name,
+                        value=None,
+                        sample_size=sample_size,
+                        is_breached=False,
+                        status=MetricStatus.INSUFFICIENT_DATA,
+                        reason="PromQL query returned no data; holding",
+                    )
 
             # 3. Guardrail Threshold Check
             is_breached = guardrail.evaluate(value)

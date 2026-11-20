@@ -102,6 +102,23 @@ def test_api_tick(mock_engine):
     assert data["current_percentage"] == 1.0
 
 
+def test_api_reset(mock_engine):
+    app = create_app(mock_engine)
+    client = TestClient(app)
+
+    # Move to STAGE_1
+    client.post("/tick")
+    assert mock_engine.current_state == "STAGE_1"
+
+    # Reset
+    res = client.post("/reset")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "reset"
+    assert data["current_state"] == RolloutState.PENDING.value
+    assert data["current_percentage"] == 0.0
+
+
 def test_cli_call_api_success():
     with patch("urllib.request.urlopen") as mock_urlopen:
         mock_resp = MagicMock()

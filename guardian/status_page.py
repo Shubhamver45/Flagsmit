@@ -335,6 +335,9 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <button class="btn-tick" onclick="handleTick()">
             ⚡ Evaluate Guardrails Now
           </button>
+          <button class="btn-tick" onclick="handleReset()" style="color: #9ca3af; border-color: rgba(156, 163, 175, 0.3);">
+            🔄 Reset Rollout to 0%
+          </button>
         </div>
       </div>
     </div>
@@ -565,6 +568,17 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         fetchStatus();
       } catch (err) {
         console.error(err);
+      }
+    }
+
+    async function handleReset() {
+      if (!confirm('Reset rollout back to PENDING (0%) for a fresh demo run?')) return;
+      try {
+        await fetch('/reset', { method: 'POST' });
+        try { await fetch('http://localhost:5001/reset-metrics', { method: 'POST' }); } catch (e) {}
+        fetchStatus();
+      } catch (err) {
+        alert('Reset error: ' + err);
       }
     }
 

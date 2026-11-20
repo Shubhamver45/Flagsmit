@@ -75,6 +75,17 @@ def create_app(engine: GuardianEngine) -> FastAPI:
             "audit_entry": entry.to_dict(),
         }
 
+    @app.post("/reset")
+    def reset_rollout() -> Dict[str, Any]:
+        entry = engine.reset()
+        return {
+            "status": "reset",
+            "message": "Rollout reset to PENDING",
+            "current_state": engine.current_state,
+            "current_percentage": engine.current_percentage,
+            "audit_entry": entry.to_dict(),
+        }
+
     @app.post("/tick")
     def trigger_tick() -> Dict[str, Any]:
         entry = engine.tick()
