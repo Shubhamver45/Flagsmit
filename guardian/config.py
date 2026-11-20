@@ -52,6 +52,8 @@ class RolloutConfig:
     project_id: int = 1
     environment_id: int = 1
     environment_key: str = ""
+    slack_webhook_url: Optional[str] = None
+    generic_webhook_url: Optional[str] = None
 
     def __post_init__(self):
         if not self.flag_name:
@@ -95,6 +97,8 @@ def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
         project_id=int(data.get("project_id", 1)),
         environment_id=int(data.get("environment_id", 1)),
         environment_key=data.get("environment_key", ""),
+        slack_webhook_url=data.get("slack_webhook_url"),
+        generic_webhook_url=data.get("generic_webhook_url"),
     )
 
 

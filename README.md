@@ -85,9 +85,45 @@ PENDING ──> STAGE_1 (1%) ──> STAGE_2 (5%) ──> STAGE_3 (25%) ──> 
 
 ### Running Unit Tests & Live Metric Verifications
 ```bash
-# Run complete unit test suite (18 tests)
+# Run complete unit test suite (27 tests)
 python3 -m pytest -v tests/
 
 # Run live metric verification against running demo app and Prometheus
 PYTHONPATH=. python3 scripts/test_live_metrics.py
 ```
+
+---
+
+## Actions, Alerts & Human Approval
+
+Guardian automates defensive actions while keeping critical final rollout decisions under human control:
+
+### 1. Automated Rollback to 0%
+* When any guardrail metric breaches its threshold (e.g., error rate > 5.0%) or an Experiment detects a Sample Ratio Mismatch (SRM), Guardian immediately calls Flagsmith to set the multivariate rollout percentage back to 0.0% and disable the flag.
+
+### 2. Alerts (Slack & Generic Webhooks)
+* **Slack Webhook**: Formats decisions into rich Slack BlockKit notifications with status banners, reasons, and key numerical metrics.
+* **Generic Webhook**: Posts standardized JSON payloads to any incident management or monitoring webhook URL (`POST /webhook`).
+* **Idempotency Guarantee**: All actions and alert dispatches are protected by an `IdempotencyManager` (`guardian/actions/idempotency.py`). Repeated evaluation loops or service restarts will never double-fire rollbacks or re-send duplicate alerts for the same decision key.
+
+### 3. Human Approval Step
+Before promoting a flag to 100%, Guardian transitions into `AWAITING_APPROVAL` and holds. Operators approve the final promotion via:
+* **FastAPI Endpoint**:
+  ```bash
+  curl -X POST http://localhost:8080/approve \
+    -H "Content-Type: application/json" \
+    -d '{"approved_by": "lead-sre", "reason": "Soak metrics verified healthy"}'
+  ```
+* **One-Line CLI Command**:
+  ```bash
+  python3 -m guardian.cli approve --by "lead-sre" --reason "Approved final rollout"
+  ```
+* **Or Convenience Shell Script**:
+  ```bash
+  ./scripts/guardian-approve.sh
+  ```
+* **Manual Operator Rollback**:
+  ```bash
+  python3 -m guardian.cli rollback --reason "Manual halt"
+  ```
+

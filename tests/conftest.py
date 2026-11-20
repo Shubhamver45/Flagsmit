@@ -34,6 +34,9 @@ class FakeFlagsmithClient:
             ],
         }
 
+    def get_percentage_rollout(self, flag_name: str) -> float:
+        return self.current_percentage
+
     def set_percentage_rollout(self, flag_name: str, percentage: float) -> Dict[str, Any]:
         self.current_percentage = float(percentage)
         self.is_enabled = bool(percentage > 0)

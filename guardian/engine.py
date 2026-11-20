@@ -1,14 +1,17 @@
 """
 Guardian Orchestration Engine.
-Coordinates config, state machine, Flagsmith client, guardrail metric evaluations, and audit logging.
+Coordinates config, state machine, Flagsmith client, guardrail metric evaluations,
+audit logging, alert dispatching, and idempotent execution.
 """
 
 from __future__ import annotations
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from guardian.config import RolloutConfig
 from guardian.flagsmith_client import FlagsmithClientProtocol
 from guardian.state_machine import RolloutDecision, RolloutState, RolloutStateMachine
 from guardian.audit_log import AuditEntry, AuditLogger
+from guardian.actions.alerts import AlertDispatcher
+from guardian.actions.idempotency import IdempotencyManager
 
 
 class GuardianEngine:
@@ -17,12 +20,19 @@ class GuardianEngine:
         config: RolloutConfig,
         flagsmith_client: FlagsmithClientProtocol,
         audit_logger: Optional[AuditLogger] = None,
-        metric_provider: Optional[Callable[[], Dict[str, float]]] = None,
+        metric_provider: Optional[Any] = None,
+        alert_dispatcher: Optional[AlertDispatcher] = None,
+        idempotency_manager: Optional[IdempotencyManager] = None,
     ):
         self.config = config
         self.flagsmith_client = flagsmith_client
         self.audit_logger = audit_logger or AuditLogger()
         self.metric_provider = metric_provider or (lambda: {})
+        self.alert_dispatcher = alert_dispatcher or AlertDispatcher(
+            slack_webhook_url=config.slack_webhook_url,
+            generic_webhook_url=config.generic_webhook_url,
+        )
+        self.idempotency_manager = idempotency_manager or IdempotencyManager()
         self.state_machine = RolloutStateMachine(config)
 
     @property
@@ -36,15 +46,16 @@ class GuardianEngine:
     def tick(
         self,
         metric_values: Optional[Dict[str, float]] = None,
-        evaluations: Optional[list] = None,
+        evaluations: Optional[List[Any]] = None,
         now: Optional[float] = None,
     ) -> AuditEntry:
         """
         Executes one evaluation cycle:
         1. Reads metrics via CompositeMetricProvider or callable.
         2. Steps the state machine.
-        3. Enforces the action on Flagsmith (advance, rollback, hold).
-        4. Appends decision and numerical evidence to audit log.
+        3. Enforces the action on Flagsmith (idempotently).
+        4. Dispatches webhook alerts (idempotently).
+        5. Appends decision and numerical evidence to audit log.
         """
         if evaluations is None and hasattr(self.metric_provider, "evaluate_all"):
             evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
@@ -62,27 +73,54 @@ class GuardianEngine:
             now=now,
         )
 
-        # Apply actions to Flagsmith flag
-        if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
-            pct = self.state_machine.current_percentage
-            self.flagsmith_client.set_percentage_rollout(self.config.flag_name, pct)
-        elif decision == RolloutDecision.ROLLBACK:
-            self.flagsmith_client.rollback_to_zero(self.config.flag_name, reason=reason)
+        stage_idx = self.state_machine.current_stage_index
+        should_run = self.idempotency_manager.should_execute(
+            flag_name=self.config.flag_name,
+            decision=decision.value,
+            to_state=new_state,
+            stage_index=stage_idx,
+        )
+
+        if should_run:
+            # Apply actions to Flagsmith flag
+            if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
+                pct = self.state_machine.current_percentage
+                self.flagsmith_client.set_percentage_rollout(self.config.flag_name, pct)
+            elif decision == RolloutDecision.ROLLBACK:
+                self.flagsmith_client.rollback_to_zero(self.config.flag_name, reason=reason)
+
+            self.idempotency_manager.mark_executed(
+                flag_name=self.config.flag_name,
+                decision=decision.value,
+                to_state=new_state,
+                stage_index=stage_idx,
+            )
 
         entry = self.audit_logger.record(
             flag_name=self.config.flag_name,
             from_state=prev_state,
             to_state=new_state,
             decision=decision.value,
-            reason=reason,
+            reason=reason if should_run else f"[Idempotent Re-evaluation] {reason}",
             numbers=numbers,
         )
+
+        # Dispatch alerts only when action is newly executed (never on duplicate/re-evaluation ticks)
+        if should_run and decision.value != "HOLD":
+            self.alert_dispatcher.dispatch(entry)
+
         return entry
 
     def approve(self, now: Optional[float] = None) -> AuditEntry:
         """
         Operator action: Approve final promotion when in AWAITING_APPROVAL.
         """
+        if self.state_machine.current_state != RolloutState.AWAITING_APPROVAL.value:
+            raise ValueError(
+                f"Cannot approve rollout: Current state is '{self.state_machine.current_state}', "
+                f"expected '{RolloutState.AWAITING_APPROVAL.value}'"
+            )
+
         self.state_machine.approve()
         return self.tick(now=now)
 
@@ -92,9 +130,24 @@ class GuardianEngine:
         """
         prev_state = self.state_machine.current_state
         new_state, decision, dec_reason, numbers = self.state_machine.manual_rollback()
-        self.flagsmith_client.rollback_to_zero(self.config.flag_name, reason=reason)
 
-        return self.audit_logger.record(
+        should_run = self.idempotency_manager.should_execute(
+            flag_name=self.config.flag_name,
+            decision=decision.value,
+            to_state=new_state,
+            stage_index=-99,
+        )
+
+        if should_run:
+            self.flagsmith_client.rollback_to_zero(self.config.flag_name, reason=reason)
+            self.idempotency_manager.mark_executed(
+                flag_name=self.config.flag_name,
+                decision=decision.value,
+                to_state=new_state,
+                stage_index=-99,
+            )
+
+        entry = self.audit_logger.record(
             flag_name=self.config.flag_name,
             from_state=prev_state,
             to_state=new_state,
@@ -102,6 +155,11 @@ class GuardianEngine:
             reason=f"{reason} ({dec_reason})",
             numbers=numbers,
         )
+
+        if should_run:
+            self.alert_dispatcher.dispatch(entry)
+
+        return entry
 
     def get_status(self) -> Dict[str, Any]:
         return {
