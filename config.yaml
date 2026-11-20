@@ -1,0 +1,29 @@
+# Guardian Rollout Configuration
+flag_name: "new_checkout"
+project_id: 1
+environment_id: 1
+environment_key: "N6LnMxtye9LM89yM7qwv8t"
+
+# Phased rollout percentages
+stages:
+  - 1
+  - 5
+  - 25
+  - 100
+
+# Soak time per stage (in seconds for live demo responsiveness)
+soak_time_seconds: 15
+
+# Require human operator approval before final 100% promotion
+require_approval_before_final: true
+
+# Guardrail metric sources
+guardrails:
+  - name: "new_flow_error_rate"
+    metric_source: "prometheus"
+    comparison: ">"
+    threshold: 5.0
+    query: "sum(checkout_errors_total{variant='new_flow'}) / sum(checkout_requests_total{variant='new_flow'}) * 100"
+    sample_size_query: "sum(checkout_requests_total{variant='new_flow'})"
+    min_samples: 25
+    description: "Trigger immediate rollback to 0% if new flow error rate exceeds 5.0%"

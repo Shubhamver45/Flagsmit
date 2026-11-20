@@ -1,129 +1,313 @@
 # Guardian 🛡️
-> Automated Guarded Rollouts for Self-Hosted Flagsmith (Hackathon Track 03: Build on Open Source Flagsmith)
+> **Automated Guarded Rollouts for Self-Hosted Flagsmith**  
+> *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*
 
-Guardian is a Python service running alongside self-hosted Flagsmith that automates phased feature rollouts, monitors guardrail metrics, executes instant rollbacks on breaches, and triggers notifications via webhooks/Slack.
-
----
-
-## Architecture & Components
-
-- **Flagsmith (Self-Hosted)**: Feature flag engine, multivariate weighting, and Bayesian experimentation (`http://localhost:8000`).
-- **ClickHouse Warehouse**: High-throughput telemetry and experimentation event store (`http://localhost:8123`, DB `flagsmith_exp`).
-- **PostgreSQL**: Primary Flagsmith relational store.
-- **Demo Checkout App (Flask)**: Gated checkout service evaluated with Flagsmith flag `new_checkout` (`http://localhost:5001`).
-- **Prometheus**: Metric collection and scraping (`http://localhost:9090`).
-- **Guardian Service (FastAPI / Python 3.12)**: The orchestration engine for phased rollouts and guardrail evaluations.
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
+[![Flagsmith](https://img.shields.io/badge/Flagsmith-Self--Hosted-purple.svg)](https://flagsmith.com/)
+[![Tests](https://img.shields.io/badge/Tests-27%20Passed-brightgreen.svg)](tests/)
 
 ---
 
-## Demo App & Traffic Simulator
+## The Problem
 
-The demo checkout app simulates an e-commerce checkout flow gated by Flagsmith feature flag `new_checkout`:
-* **OFF (`old_flow`)**: Legacy checkout flow (100% success rate).
-* **ON (`new_flow`)**: Modernized checkout flow with simulated failure mode (`BUG_IN_NEW_CHECKOUT=1` produces ~30% payment gateway failures).
-* **Metrics**: Real-time Prometheus metrics exported at `http://localhost:5001/metrics` and scraped by Prometheus at `http://localhost:9090`.
+Progressive delivery with feature flags is the gold standard for modern engineering, but rolling out flags safely remains fraught with risk:
 
-### Running Traffic Simulator
-```bash
-python3 demo/simulator.py
+1. **Manual Rollout Fatigue**: Engineers bump a flag from 5% to 25% to 50% manually, watching dashboards and waiting. When fatigue sets in, rollouts are rushed.
+2. **Delayed Blast-Radius Containment**: When a new feature causes subtle payment gateway failures, memory spikes, or latency degradations, it often takes tens of minutes for alerts to route to an on-call engineer, diagnose the root cause, log into the feature flag UI, and flip the switch to 0%.
+3. **Experiments vs. Operational Guardrails**: Feature flag experimentation evaluates *user preference* (e.g. conversions or click-throughs), but operational health metrics (error rates, p99 latency, sample ratio mismatches) require **instant, automated safety breakers** that roll back immediately before an incident cascades.
+
+**Guardian** bridges this gap: a lightweight, robust Python service that runs next to self-hosted Flagsmith. It advances feature flags through phased rollout stages, continuously watches operational guardrails and experimentation metrics, triggers instant rollbacks to 0% on any breach, dispatches alerts via Slack/webhooks, and gates final 100% promotion behind human approval.
+
+---
+
+## Architecture Diagram
+
+```mermaid
+flowchart TD
+    subgraph Client Traffic & Users
+        Users["👥 Simulated Users (200 distinct identities)"]
+        Simulator["🤖 demo/simulator.py (Continuous Traffic)"]
+    end
+
+    subgraph Flagsmith Core Stack
+        FS_UI["🖥️ Flagsmith UI (:8000)"]
+        FS_API["⚡ Flagsmith Admin REST API (:8000)"]
+        FS_DB[("🗄️ PostgreSQL (:5432)")]
+        ClickHouse[("📊 ClickHouse Warehouse (:8123)")]
+    end
+
+    subgraph Target Application
+        App["🛒 Demo Checkout App (:5001)<br/>(Flask + Gunicorn)"]
+        Prometheus["📈 Prometheus (:9090)<br/>Scrapes :5001/metrics"]
+    end
+
+    subgraph Guardian Service [":8080"]
+        SM["🔄 State Machine<br/>(PENDING ➔ STAGE_n ➔ APPROVAL ➔ PROMOTED)"]
+        Metrics["📐 Composite Metric Provider<br/>(Prometheus PromQL + Flagsmith Exp)"]
+        Idempotency["🛡️ Idempotency Manager<br/>(Prevents duplicate actions/alerts)"]
+        AuditLog["📜 Append-Only Audit Log"]
+        StatusPage["🌐 Real-Time Status Page<br/>(GET /)"]
+        API["🔌 REST API & CLI<br/>(POST /approve, POST /rollback)"]
+    end
+
+    subgraph Alerts & Operator
+        Operator["🧑‍💻 Human Operator<br/>(CLI: guardian approve / Web UI)"]
+        Slack["💬 Slack / Generic Webhook Alerts"]
+    end
+
+    Users -->|Requests| App
+    Simulator -->|Traffic Stream| App
+    App -->|Evaluates Flag: new_checkout| FS_API
+    App -->|Exports Metrics| Prometheus
+    FS_API --- FS_DB
+    FS_API --- ClickHouse
+
+    Metrics -->|1. PromQL Query| Prometheus
+    Metrics -->|2. SRM & Chance-to-Win| FS_API
+    SM -->|Evaluate Guardrails| Metrics
+    SM -->|Advancement / Rollback Decision| Idempotency
+    Idempotency -->|Set Rollout % / Rollback 0%| FS_API
+    Idempotency -->|Dispatch Alert| Slack
+    SM -->|Record Decision & Evidence| AuditLog
+    AuditLog --> StatusPage
+    Operator -->|Approve Final 100%| API
+    API --> SM
 ```
-This sends traffic across 200 distinct user identities and aggregates client-side vs. Prometheus-scraped error rates per flag variant.
 
 ---
 
-## Getting Started
+## How Flagsmith is Used
+
+Guardian was designed from the ground up to integrate with open-source, self-hosted Flagsmith:
+
+1. **Multivariate Rollout Manipulation**:
+   Guardian controls the target feature's rollout percentage directly via Flagsmith's Admin REST API:
+   ```http
+   PATCH /api/v1/features/featurestates/{feature_state_id}/
+   Content-Type: application/json
+   X-Environment-Key: {admin_key}
+
+   {
+     "environment": 1,
+     "enabled": true,
+     "multivariate_feature_state_values": [
+       {
+         "multivariate_feature_option": {option_id},
+         "percentage_allocation": 25.0
+       }
+     ]
+   }
+   ```
+2. **Instant 0% Rollback Mechanism**:
+   When any guardrail metric breaches its threshold, Guardian immediately calls Flagsmith to set the multivariate allocation to `0.0%` and toggle the flag to `enabled: false`, halting all exposure to the problematic variant in milliseconds.
+3. **Decoupled Experimentation & System Segment Awareness**:
+   As discovered during our feasibility spike ([`docs/spike.md`](docs/spike.md)), Flagsmith's experimentation engine locks direct feature state modifications (`HTTP 409 Conflict: system_segment_modification`). Guardian decouples rollout management from experimentation segments, allowing normal rollout flags to advance while concurrently querying Flagsmith's Bayesian experimentation metrics.
+4. **Bayesian Experimentation & SRM Detection**:
+   Guardian queries Flagsmith's experiment results endpoint (`GET /api/v1/environments/{key}/experiments/{id}/results/`), evaluating:
+   * **Chance to be Worse**: Calculated as `1.0 - chance_to_win`. If > 90%, Guardian halts advancement.
+   * **Sample Ratio Mismatch (SRM)**: If `srm_p_value < 0.001`, an allocation anomaly is detected and Guardian triggers an immediate hold or rollback.
+   * **Cooldown Protection**: Flagsmith throttles experiment calculation refreshes to 300 seconds (HTTP 429). Guardian's `FlagsmithExperimentMetricSource` enforces internal caching to respect this limit.
+
+---
+
+## Quickstart Guide
 
 ### 1. Prerequisites
-- Docker & Docker Compose
-- Python 3.12+
+* **Docker & Docker Compose**
+* **Python 3.12+** (or Python 3.9+)
+* `curl`
 
-### 2. Start Flagsmith Stack
+### 2. Launch the Entire Demo with One Command
 ```bash
-./scripts/up.sh
+./scripts/demo.sh
 ```
-This script launches Postgres, ClickHouse, Flagsmith, and the Task Processor, runs database migrations, sets up the initial organisation, project, environment, Master Admin API key, and connects ClickHouse as the data warehouse.
 
-### 3. Stop Flagsmith Stack
-```bash
-./scripts/down.sh
-```
+This single command:
+1. Starts the self-hosted Flagsmith stack (Flagsmith API, PostgreSQL, ClickHouse Warehouse).
+2. Starts Prometheus on `:9090` and the Flask Demo Checkout App on `:5001`.
+3. Waits for all health checks to report ready.
+4. Launches the **Guardian daemon** on `http://localhost:8080/`.
+5. Starts the **traffic simulator**, streaming requests from 200 distinct user identities.
 
 ---
 
-## Local Environment Details
+## Service URLs
 
-- **Flagsmith Dashboard**: [http://localhost:8000](http://localhost:8000)
-  - **Login**: `admin@example.com` / `AdminPassword123!`
-- **Organisation**: `Guardian Org` (ID: `1`)
-- **Project**: `Guardian Project` (ID: `1`)
-- **Environment**: `Development` (ID: `1`)
-- **Client Environment Key**: `N6LnMxtye9LM89yM7qwv8t`
-- **Warehouse**: ClickHouse (`flagsmith_exp` at `clickhouse:8123`) — Status: **Connected**
-
----
-
-## Guardian Core Engine
-
-Guardian orchestrates phased rollouts using a deterministic state machine:
-```text
-PENDING ──> STAGE_1 (1%) ──> STAGE_2 (5%) ──> STAGE_3 (25%) ──> AWAITING_APPROVAL ──> PROMOTED (100%)
-   │              │                 │                 │                   │
-   └──────────────┴─────────────────┴─────────────────┴───────────────────┴──> ROLLED_BACK (0%)
-                                 (on any metric breach)
-```
-
-### Key Modules
-* [`guardian/config.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/config.py): YAML configuration schema for stages (`[1, 5, 25, 100]`), soak duration, and guardrails.
-* [`guardian/state_machine.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/state_machine.py): State machine logic enforcing soak time, metric threshold breaches, and human-in-the-loop approval.
-* [`guardian/flagsmith_client.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/flagsmith_client.py): Admin API client for percentage rollouts and 0% rollbacks verified against self-hosted Flagsmith.
-* [`guardian/audit_log.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/audit_log.py): Append-only audit trail logging every decision, reason, and numerical evidence.
-* [`guardian/metrics/`](file:///Users/shubham/Desktop/Flagsmit/guardian/metrics/): Unified metric source providers:
-  * `PrometheusMetricSource`: PromQL evaluator with minimum sample size gating.
-  * `FlagsmithExperimentMetricSource`: Bayesian chance-to-be-worse inference, SRM warning enforcement, and 300s refresh cooldown.
-  * `CompositeMetricProvider`: Dispatcher routing guardrail queries across sources.
-* [`guardian/engine.py`](file:///Users/shubham/Desktop/Flagsmit/guardian/engine.py): Unified orchestration engine.
-
-### Running Unit Tests & Live Metric Verifications
-```bash
-# Run complete unit test suite (27 tests)
-python3 -m pytest -v tests/
-
-# Run live metric verification against running demo app and Prometheus
-PYTHONPATH=. python3 scripts/test_live_metrics.py
-```
+| Service | URL | Credentials / Notes |
+| :--- | :--- | :--- |
+| **Guardian Status Page** | [http://localhost:8080/](http://localhost:8080/) | Live real-time rollout dashboard with operator actions |
+| **Flagsmith Admin Dashboard** | [http://localhost:8000/](http://localhost:8000/) | `admin@example.com` / `AdminPassword123!` |
+| **Demo Checkout App** | [http://localhost:5001/](http://localhost:5001/) | Gated checkout app with `/metrics` and `/checkout` |
+| **Prometheus Dashboard** | [http://localhost:9090/](http://localhost:9090/) | Real-time PromQL query interface |
 
 ---
 
-## Actions, Alerts & Human Approval
+## Observing Guardian in Action
 
-Guardian automates defensive actions while keeping critical final rollout decisions under human control:
+### 1. Phased Rollout Progression
+Open the **Guardian Status Page** at [http://localhost:8080/](http://localhost:8080/).
+* Guardian starts at `PENDING` (0%) and advances to `STAGE_1` (1%).
+* As the simulator sends requests, Prometheus measures the error rates.
+* If metrics remain healthy throughout the configured soak time (15s), Guardian advances to `STAGE_2` (5%), then `STAGE_3` (25%).
 
-### 1. Automated Rollback to 0%
-* When any guardrail metric breaches its threshold (e.g., error rate > 5.0%) or an Experiment detects a Sample Ratio Mismatch (SRM), Guardian immediately calls Flagsmith to set the multivariate rollout percentage back to 0.0% and disable the flag.
+### 2. Automated Breach Detection & Instant Rollback
+* In the demo app, the flag variant `new_flow` has `BUG_IN_NEW_CHECKOUT=1` active, causing ~30% payment failures.
+* When traffic hits `new_flow` and Prometheus observes an error rate > 5.0% (with sufficient sample size), Guardian:
+  1. Instantly transitions state to `ROLLED_BACK`.
+  2. Issues an Admin API patch to Flagsmith, resetting the flag to **0%**.
+  3. Dispatches a Slack / Webhook alert with the exact error percentage.
+  4. Records the breach and numerical evidence in the audit log.
 
-### 2. Alerts (Slack & Generic Webhooks)
-* **Slack Webhook**: Formats decisions into rich Slack BlockKit notifications with status banners, reasons, and key numerical metrics.
-* **Generic Webhook**: Posts standardized JSON payloads to any incident management or monitoring webhook URL (`POST /webhook`).
-* **Idempotency Guarantee**: All actions and alert dispatches are protected by an `IdempotencyManager` (`guardian/actions/idempotency.py`). Repeated evaluation loops or service restarts will never double-fire rollbacks or re-send duplicate alerts for the same decision key.
+### 3. Human-in-the-Loop Final Promotion
+When all stages pass their soak period without breaches, Guardian enters `AWAITING_APPROVAL`.
+Operators approve the final 100% promotion through either:
 
-### 3. Human Approval Step
-Before promoting a flag to 100%, Guardian transitions into `AWAITING_APPROVAL` and holds. Operators approve the final promotion via:
-* **FastAPI Endpoint**:
+* **From the Status Page**: Click the prominent **Approve 100%** button.
+* **Via the One-Line CLI Command**:
   ```bash
-  curl -X POST http://localhost:8080/approve \
-    -H "Content-Type: application/json" \
-    -d '{"approved_by": "lead-sre", "reason": "Soak metrics verified healthy"}'
+  python3 -m guardian.cli approve --by "release-lead" --reason "Metrics verified healthy"
   ```
-* **One-Line CLI Command**:
-  ```bash
-  python3 -m guardian.cli approve --by "lead-sre" --reason "Approved final rollout"
-  ```
-* **Or Convenience Shell Script**:
+* **Or via Shell Script**:
   ```bash
   ./scripts/guardian-approve.sh
   ```
-* **Manual Operator Rollback**:
-  ```bash
-  python3 -m guardian.cli rollback --reason "Manual halt"
-  ```
 
+---
+
+## Configuration Reference (`config.yaml`)
+
+Guardian is driven by a clean YAML configuration schema ([`config.yaml`](config.yaml)):
+
+```yaml
+# Target feature flag managed in Flagsmith
+flag_name: "new_checkout"
+project_id: 1
+environment_id: 1
+environment_key: "N6LnMxtye9LM89yM7qwv8t"
+
+# Rollout percentage stages
+stages:
+  - 1
+  - 5
+  - 25
+  - 100
+
+# Minimum soak duration (seconds) required at each stage before advancing
+soak_time_seconds: 15
+
+# Require explicit operator approval before promoting to the final stage (100%)
+require_approval_before_final: true
+
+# Webhook notifications (optional)
+slack_webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+generic_webhook_url: "https://api.example.com/rollout-webhooks"
+
+# Guardrail metric triggers
+guardrails:
+  # Prometheus PromQL guardrail
+  - name: "new_flow_error_rate"
+    metric_source: "prometheus"
+    comparison: ">"
+    threshold: 5.0
+    query: "sum(checkout_errors_total{variant='new_flow'}) / sum(checkout_requests_total{variant='new_flow'}) * 100"
+    sample_size_query: "sum(checkout_requests_total{variant='new_flow'})"
+    min_samples: 25
+    description: "Rollback to 0 if new flow error rate exceeds 5.0%"
+
+  # Flagsmith Experimentation guardrail
+  - name: "checkout_experiment_guardrail"
+    metric_source: "flagsmith_experiment"
+    comparison: ">"
+    threshold: 0.90
+    experiment_id: 1
+    metric_id: 1
+    description: "Hold or rollback if experiment indicates >90% chance to be worse or SRM detected"
+```
+
+### Configuration Fields
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `flag_name` | string | Name of the Flagsmith feature flag. |
+| `project_id` | integer | Flagsmith Project ID. |
+| `environment_id` | integer | Flagsmith Environment ID. |
+| `environment_key` | string | Flagsmith Client Environment Key. |
+| `stages` | list[float] | Percentage allocations (must be strictly increasing, starting > 0, ending at 100). |
+| `soak_time_seconds` | integer | Dwell time per stage before evaluation allows advancement. |
+| `require_approval_before_final` | boolean | If `true`, pauses at `AWAITING_APPROVAL` before the final stage. |
+| `slack_webhook_url` | string | (Optional) Slack incoming webhook URL for BlockKit alerts. |
+| `generic_webhook_url` | string | (Optional) Generic HTTP endpoint for JSON audit payloads. |
+| `guardrails[].metric_source` | string | `prometheus` or `flagsmith_experiment`. |
+| `guardrails[].comparison` | string | Comparison operator: `>`, `<`, `>=`, `<=`, `==`. |
+| `guardrails[].threshold` | float | Numerical threshold triggering a breach. |
+| `guardrails[].query` | string | PromQL query expression (for Prometheus sources). |
+| `guardrails[].sample_size_query`| string | PromQL query returning total request count for sample size validation. |
+| `guardrails[].min_samples` | integer | Minimum sample size required before triggering action (prevents premature false alarms). |
+| `guardrails[].experiment_id` | integer | Flagsmith Experiment ID (for Flagsmith Experiment sources). |
+| `guardrails[].metric_id` | integer | Flagsmith Metric ID to monitor for chance to be worse. |
+
+---
+
+## Running Tests
+
+Guardian maintains a comprehensive unit test suite covering configuration validation, state transitions, Flagsmith API request structures, Prometheus PromQL evaluations, Flagsmith Bayesian experiments, SRM anomaly gating, idempotency protection, and FastAPI endpoints:
+
+```bash
+# Run complete test suite (27 passing tests)
+python3 -m pytest -v tests/
+```
+
+---
+
+## Repository Structure
+
+```text
+.
+├── config.yaml                     # Active rollout configuration
+├── docker-compose.yml              # Flagsmith, ClickHouse, Postgres, Prometheus, Demo App
+├── docs/
+│   └── spike.md                    # Feasibility spike & verified Flagsmith API behaviors
+├── demo/
+│   ├── app.py                      # Flask checkout application (new_checkout flag gated)
+│   ├── simulator.py                # Multi-identity continuous traffic generator
+│   ├── Dockerfile                  # Container build for demo app
+│   └── prometheus.yml              # Prometheus scraping configuration
+├── guardian/
+│   ├── actions/
+│   │   ├── alerts.py               # Slack BlockKit & Generic webhook dispatchers
+│   │   └── idempotency.py          # Execution deduplication manager
+│   ├── metrics/
+│   │   ├── base.py                 # Abstract MetricSource & MetricEvaluation interfaces
+│   │   ├── prometheus.py           # PromQL evaluator with sample size protection
+│   │   ├── flagsmith_exp.py        # Bayesian chance-to-be-worse & SRM anomaly checker
+│   │   └── registry.py             # Composite metric provider
+│   ├── api.py                      # FastAPI server (GET /, POST /approve, POST /rollback)
+│   ├── audit_log.py                # Append-only structured decision audit logger
+│   ├── cli.py                      # Operator command-line interface
+│   ├── config.py                   # Pydantic configuration parser & validator
+│   ├── engine.py                   # Central orchestration engine
+│   ├── flagsmith_client.py         # Flagsmith Master Admin API client
+│   ├── main.py                     # Guardian daemon runner with background ticker
+│   ├── state_machine.py            # Rollout lifecycle state machine
+│   └── status_page.py              # Real-time web dashboard HTML generator
+├── scripts/
+│   ├── demo.sh                     # One-command demo orchestrator
+│   ├── up.sh                       # Self-hosted Flagsmith stack launcher
+│   ├── down.sh                     # Flagsmith stack teardown
+│   ├── setup_flagsmith.py          # Auto-provisions Org, Project, Env & Warehouse
+│   ├── guardian-approve.sh         # Convenience CLI approval script
+│   └── test_live_metrics.py        # Integration test against live local stack
+└── tests/                          # 27 comprehensive pytest unit tests
+```
+
+---
+
+## Hackathon Ground Rules Adherence
+
+* **Self-Hosted Open Source Flagsmith**: Fully integrated with self-hosted Flagsmith on ClickHouse and Postgres.
+* **No API Guesswork**: Every single Flagsmith endpoint, query parameter, and payload structure was empirically tested and documented in [`docs/spike.md`](docs/spike.md).
+* **Python 3.12, FastAPI, pytest**: Clean, modular, well-typed code with 100% reproducible tests.
+* **Decoupled Experiment & Rollout Architecture**: Resilient against Flagsmith's experiment system segment lock.
+* **Small Commits & Clean History**: Git commit history tracks every phase systematically.
+* **No Secrets in Git**: All sensitive master keys and tokens are loaded strictly from `.env`.

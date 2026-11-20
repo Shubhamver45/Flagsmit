@@ -101,5 +101,28 @@ def query_prometheus():
     except Exception as e:
         print(f"Could not query Prometheus at {PROMETHEUS_URL}: {e}")
 
+def run_continuous(delay: float = 0.5, batch_size: int = 5):
+    print(f"=== Starting Continuous Traffic Simulation ===")
+    print(f"Target: {TARGET_URL}")
+    print(f"Unique Identities: {NUM_IDENTITIES}")
+    print(f"Streaming {batch_size} requests every {delay}s across distinct identities...")
+    identities = [f"user_{i}" for i in range(1, NUM_IDENTITIES + 1)]
+    count = 0
+    while True:
+        for _ in range(batch_size):
+            user_id = random.choice(identities)
+            try:
+                requests.post(TARGET_URL, json={"user_id": user_id}, timeout=3)
+                count += 1
+            except Exception:
+                pass
+        if count % 50 == 0:
+            print(f"Sent {count} simulated checkout requests...")
+        time.sleep(delay)
+
+
 if __name__ == "__main__":
-    run_simulation()
+    if "--continuous" in sys.argv or os.environ.get("CONTINUOUS") == "1":
+        run_continuous()
+    else:
+        run_simulation()

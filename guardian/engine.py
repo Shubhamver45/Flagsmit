@@ -34,6 +34,7 @@ class GuardianEngine:
         )
         self.idempotency_manager = idempotency_manager or IdempotencyManager()
         self.state_machine = RolloutStateMachine(config)
+        self.latest_evaluations: List[Any] = []
 
     @property
     def current_state(self) -> str:
@@ -65,6 +66,9 @@ class GuardianEngine:
                 evaluations = res
             elif isinstance(res, dict):
                 metric_values = res
+
+        if evaluations:
+            self.latest_evaluations = evaluations
 
         prev_state = self.state_machine.current_state
         new_state, decision, reason, numbers = self.state_machine.evaluate(
@@ -162,6 +166,38 @@ class GuardianEngine:
         return entry
 
     def get_status(self) -> Dict[str, Any]:
+        guardrail_reports = []
+        if self.latest_evaluations:
+            for ev in self.latest_evaluations:
+                guardrail_reports.append({
+                    "name": ev.name,
+                    "value": ev.value,
+                    "sample_size": ev.sample_size,
+                    "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
+                    "is_breached": getattr(ev, "is_breached", False),
+                    "reason": getattr(ev, "reason", ""),
+                    "details": getattr(ev, "details", {}),
+                })
+        else:
+            for g in self.config.guardrails:
+                guardrail_reports.append({
+                    "name": g.name,
+                    "threshold": g.threshold,
+                    "comparison": g.comparison,
+                    "metric_source": g.metric_source,
+                    "status": "WAITING_FIRST_TICK",
+                    "value": None,
+                    "sample_size": None,
+                    "is_breached": False,
+                    "reason": "Awaiting initial metric evaluation",
+                })
+
+        import time
+        now = time.time()
+        soak_elapsed = 0.0
+        if self.state_machine.stage_entered_at:
+            soak_elapsed = max(0.0, round(now - self.state_machine.stage_entered_at, 1))
+
         return {
             "flag_name": self.config.flag_name,
             "state": self.state_machine.current_state,
@@ -170,5 +206,8 @@ class GuardianEngine:
             "is_approved": self.state_machine.is_approved,
             "stages": self.config.stages,
             "soak_time_seconds": self.config.soak_time_seconds,
+            "soak_elapsed_seconds": soak_elapsed,
+            "guardrails": guardrail_reports,
+            "timeline": [e.to_dict() for e in reversed(self.audit_logger.entries)],
             "recent_audit_entries": [e.to_dict() for e in self.audit_logger.entries[-5:]],
         }

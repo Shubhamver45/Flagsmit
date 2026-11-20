@@ -6,10 +6,12 @@ Provides REST endpoints for status inspection, operator actions, and human appro
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from guardian.engine import GuardianEngine
 from guardian.state_machine import RolloutState
+from guardian.status_page import STATUS_PAGE_HTML
 
 
 class ApproveRequest(BaseModel):
@@ -27,6 +29,10 @@ def create_app(engine: GuardianEngine) -> FastAPI:
         description="Guarded Rollout Engine for Flagsmith",
         version="1.0.0",
     )
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> str:
+        return STATUS_PAGE_HTML
 
     @app.get("/health")
     def health() -> Dict[str, str]:

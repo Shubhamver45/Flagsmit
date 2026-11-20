@@ -28,6 +28,12 @@ def test_api_health_and_status(mock_engine):
     app = create_app(mock_engine)
     client = TestClient(app)
 
+    # Test Status Page HTML
+    res_page = client.get("/")
+    assert res_page.status_code == 200
+    assert "Guardian 🛡️" in res_page.text
+    assert "<!DOCTYPE html>" in res_page.text
+
     res = client.get("/health")
     assert res.status_code == 200
     assert res.json() == {"status": "healthy", "service": "guardian"}
