@@ -41,7 +41,10 @@ class FlagsmithAdminClient:
         session: Optional[Any] = None,
     ):
         import requests
-        self.api_url = api_url.rstrip("/")
+        api_url = api_url.rstrip("/")
+        if not api_url.endswith("/api/v1"):
+            api_url = f"{api_url}/api/v1"
+        self.api_url = api_url
         self.admin_api_key = admin_api_key
         self.environment_key = environment_key
         self.project_id = project_id

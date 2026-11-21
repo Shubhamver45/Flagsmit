@@ -82,8 +82,8 @@ class RolloutStateMachine:
         now = now if now is not None else time.time()
         metric_values = metric_values or {}
 
-        # Terminal states do not progress automatically
-        if self.current_state in (RolloutState.PROMOTED.value, RolloutState.ROLLED_BACK.value):
+        # Rolled back is a terminal state (stays at 0% until explicit operator reset)
+        if self.current_state == RolloutState.ROLLED_BACK.value:
             numbers = {"current_percentage": self.current_percentage, "state": self.current_state}
             return self.current_state, RolloutDecision.HOLD, f"Rollout in terminal state: {self.current_state}", numbers
 
@@ -142,7 +142,12 @@ class RolloutStateMachine:
             reason = f"Holding stage {self.current_state} due to insufficient sample size: {insufficient_data_reasons[0]}"
             return self.current_state, RolloutDecision.HOLD, reason, numbers
 
-        # 2. If AWAITING_APPROVAL, check if human approval was granted
+        # If already fully promoted and guardrails are healthy, hold at 100%
+        if self.current_state == RolloutState.PROMOTED.value:
+            numbers = {"current_percentage": self.current_percentage, "state": self.current_state}
+            return self.current_state, RolloutDecision.HOLD, "Rollout fully promoted at 100%. Guardrails healthy.", numbers
+
+        # 3. If AWAITING_APPROVAL, check if human approval was granted
         if self.current_state == RolloutState.AWAITING_APPROVAL.value:
             if self.is_approved:
                 self.current_state = RolloutState.PROMOTED.value

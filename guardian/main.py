@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import uvicorn
+from dataclasses import replace
 from pathlib import Path
 
 from guardian.config import load_config
@@ -52,7 +53,7 @@ async def background_ticker(engine: GuardianEngine, interval: float = 5.0) -> No
         await asyncio.sleep(interval)
 
 
-def build_engine(config_path: str = "config.yaml") -> GuardianEngine:
+def build_engine(config_path: str = "config.yaml", demo_mode: bool = False, demo_soak: Optional[int] = None) -> GuardianEngine:
     load_env_file()
 
     flagsmith_url = os.environ.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
@@ -62,9 +63,23 @@ def build_engine(config_path: str = "config.yaml") -> GuardianEngine:
 
     cfg = load_config(config_path)
 
-    # Allow env overrides for project / env keys
+    # Allow env overrides for keys, webhooks, and demo mode
+    overrides: Dict[str, Any] = {}
     if env_key:
-        cfg.environment_key = env_key
+        overrides["environment_key"] = env_key
+    if os.environ.get("SLACK_WEBHOOK_URL"):
+        overrides["slack_webhook_url"] = os.environ["SLACK_WEBHOOK_URL"]
+    if os.environ.get("GENERIC_WEBHOOK_URL"):
+        overrides["generic_webhook_url"] = os.environ["GENERIC_WEBHOOK_URL"]
+
+    is_demo = demo_mode or (os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"))
+    if is_demo:
+        soak = demo_soak if demo_soak is not None else int(os.environ.get("DEMO_SOAK_SECONDS", "5"))
+        overrides["soak_time_seconds"] = soak
+        print(f"⚡ [DEMO MODE ACTIVE] Accelerated soak duration: {soak}s per stage")
+
+    if overrides:
+        cfg = replace(cfg, **overrides)
 
     client = FlagsmithAdminClient(
         api_url=flagsmith_url,
@@ -95,8 +110,15 @@ def build_engine(config_path: str = "config.yaml") -> GuardianEngine:
     return engine
 
 
-def run_server(config_path: str = "config.yaml", host: str = "0.0.0.0", port: int = 8080, interval: float = 5.0):
-    engine = build_engine(config_path)
+def run_server(
+    config_path: str = "config.yaml",
+    host: str = "0.0.0.0",
+    port: int = 8080,
+    interval: float = 5.0,
+    demo_mode: bool = False,
+    demo_soak: Optional[int] = None,
+):
+    engine = build_engine(config_path, demo_mode=demo_mode, demo_soak=demo_soak)
     app = create_app(engine)
 
     @app.on_event("startup")
@@ -109,6 +131,7 @@ def run_server(config_path: str = "config.yaml", host: str = "0.0.0.0", port: in
     print(f"   REST API    : http://localhost:{port}/status")
     print(f"   Flag Target : {engine.config.flag_name}")
     print(f"   Stages      : {engine.config.stages}%")
+    print(f"   Soak Time   : {engine.config.soak_time_seconds}s per stage")
     print(f"========================================================\n")
 
     uvicorn.run(app, host=host, port=port, log_level="warning")
@@ -119,10 +142,19 @@ def main():
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--host", default="0.0.0.0", help="Host address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
-    parser.add_argument("--interval", type=float, default=5.0, help="Evaluation tick interval seconds (default: 5.0)")
+    parser.add_argument("--interval", type=float, default=3.0, help="Evaluation tick interval seconds (default: 3.0)")
+    parser.add_argument("--demo-mode", action="store_true", help="Enable accelerated demo mode with fast soak times")
+    parser.add_argument("--demo-soak", type=int, default=None, help="Soak time in seconds when in demo mode (default: 5)")
 
     args = parser.parse_args()
-    run_server(config_path=args.config, host=args.host, port=args.port, interval=args.interval)
+    run_server(
+        config_path=args.config,
+        host=args.host,
+        port=args.port,
+        interval=args.interval,
+        demo_mode=args.demo_mode,
+        demo_soak=args.demo_soak,
+    )
 
 
 if __name__ == "__main__":

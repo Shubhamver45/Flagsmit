@@ -54,8 +54,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 4. Start Guardian Daemon
-echo "==> Starting Guardian Rollout Daemon on http://localhost:8080..."
-PYTHONPATH=. python3 -m guardian.main --port 8080 --interval 3 &
+echo "==> Starting Guardian Rollout Daemon on http://localhost:8080 (DEMO_MODE=1, soak: 5s)..."
+DEMO_MODE=1 DEMO_SOAK_SECONDS=5 PYTHONPATH=. python3 -m guardian.main --port 8080 --interval 2 --demo-mode &
 GUARDIAN_PID=$!
 PIDS+=("$GUARDIAN_PID")
 

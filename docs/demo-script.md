@@ -20,7 +20,7 @@ Open the following browser tabs (or split-screen layout):
 
 > *"With modern AI coding agents, engineering teams are writing and shipping code faster than ever before. But rapid deployment creates an operational nightmare: when a newly shipped feature flag contains a hidden bug—like a payment gateway failure or a memory leak—how quickly can you contain the blast radius?*  
 > 
-> *Expensive enterprise platforms like LaunchDarkly or Statsig charge thousands of dollars for automated guardrails and auto-rollbacks behind steep paywalls. If you are an open-source team self-hosting Flagsmith, you’re often left manually babysitting dashboards, waiting for customer bug reports before an on-call engineer wakes up to flip the flag back to 0%.*  
+> *Commercial platforms like LaunchDarkly and Datadog charge thousands of dollars for automated guardrails and auto-rollbacks behind steep paywalls. If you are an open-source team self-hosting Flagsmith, you’re often left manually babysitting dashboards, waiting for customer bug reports before an on-call engineer wakes up to flip the flag back to 0%.*  
 > 
 > *Meet **Guardian**: an open-source service built directly on top of self-hosted Flagsmith that automates phased, guarded rollouts, continuously evaluates operational metrics, executes instant rollbacks on breaches, and alerts your team."*
 
@@ -69,12 +69,13 @@ Open the following browser tabs (or split-screen layout):
 ---
 
 ### Act 4: Where Flagsmith Fits (2:25 – 3:00)
-**Visual**: Show Flagsmith UI, ClickHouse warehouse connection tab, and `config.yaml`.
+**Visual**: Show Flagsmith UI, feature state details, and `config.yaml`.
 
-> *"Flagsmith is the core foundation that makes Guardian possible:*  
-> * First, Guardian leverages Flagsmith's **Master Admin API** for precision multivariate percentage control.*  
-> * Second, Guardian hooks into Flagsmith's **ClickHouse experimentation warehouse**, inspecting Bayesian metrics (`chance_to_win`) and detecting **Sample Ratio Mismatches (SRM)** to catch allocation anomalies early.*  
-> * Third, Guardian respects Flagsmith's architecture, decoupling rollout flags from experiment segment overrides to ensure seamless operational control.*  
+> *"Flagsmith is the core feature flag engine that powers Guardian:*  
+> * First, Guardian drives Flagsmith's **Master Admin API** for programmatic multivariate percentage allocation and instant 0.0% rollback toggles.*  
+> * Second, the demo application evaluates user identities using the official **Flagsmith Client SDK**.*  
+> * Third, Guardian respects Flagsmith's internal architecture, cleanly decoupling operational rollout flags from experiment segment overrides to avoid system locks.*  
+> * And behind the scenes, Guardian also includes an experiment results evaluator capable of monitoring Flagsmith's Bayesian metrics (`chance_to_win`) and Sample Ratio Mismatch (SRM) alerts.*  
 > 
 > *Best of all, everything runs locally with one command: `./scripts/demo.sh`.*  
 > 
