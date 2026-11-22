@@ -133,8 +133,6 @@ def test_live_engine_integration():
                 min_samples=30,
             )
         ],
-        project_id=1,
-        environment_id=1,
         environment_key=ENV_KEY,
     )
 
@@ -150,8 +148,6 @@ def test_live_engine_integration():
         api_url=FLAGSMITH_URL,
         admin_api_key=ADMIN_KEY,
         environment_key=ENV_KEY,
-        project_id=1,
-        environment_id=1,
     )
 
     logger = AuditLogger()

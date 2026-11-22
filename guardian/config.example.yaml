@@ -1,8 +1,7 @@
 # Guardian Configuration: new_checkout guarded rollout
 flag_name: "new_checkout"
-project_id: 1
-environment_id: 1
-environment_key: "N6LnMxtye9LM89yM7qwv8t"
+# environment_key is loaded from .env (or resolved dynamically from Flagsmith)
+environment_key: ""
 
 # Phased rollout percentages
 stages:

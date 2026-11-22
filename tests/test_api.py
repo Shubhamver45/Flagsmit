@@ -173,9 +173,10 @@ def test_write_endpoints_require_token_when_configured(mock_engine):
     assert res_valid_header.status_code == 200
     assert res_valid_header.json()["status"] == "reset"
 
-    # 6. Write endpoints with VALID query parameter (?token=...) -> success
-    res_valid_query = client.post("/tick?token=secret-token-123")
-    assert res_valid_query.status_code == 200
+    # 6. Query parameter (?token=...) is rejected (removed for security) -> 401 Unauthorized
+    res_rejected_query = client.post("/tick?token=secret-token-123")
+    assert res_rejected_query.status_code == 401
+    assert "Unauthorized" in res_rejected_query.json()["detail"]
 
 
 def test_cli_call_api_with_token():
@@ -219,7 +220,6 @@ def test_demo_app_auth_when_token_configured(monkeypatch):
         assert res_auth.status_code == 200
         assert res_auth.get_json()["bug_enabled"] is True
 
-        # With query param token -> 200
+        # Query parameter (?token=...) is rejected (removed for security) -> 401
         res_query = client.post("/reset-metrics?token=demo-secret")
-        assert res_query.status_code == 200
-        assert res_query.get_json()["status"] == "metrics_cleared"
+        assert res_query.status_code == 401

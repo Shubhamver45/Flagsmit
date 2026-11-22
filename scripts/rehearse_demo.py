@@ -65,8 +65,6 @@ def run_single_rehearsal(iteration: int) -> bool:
         api_url=FLAGSMITH_URL,
         admin_api_key=ADMIN_KEY,
         environment_key=ENV_KEY,
-        project_id=1,
-        environment_id=1,
     )
     client.rollback_to_zero(cfg.flag_name, reason="Rehearsal initial reset")
 

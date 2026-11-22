@@ -5,6 +5,7 @@ Provides REST endpoints for status inspection, operator actions, and human appro
 
 from __future__ import annotations
 import os
+import secrets
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Request, Security, Depends, status
 from fastapi.responses import HTMLResponse
@@ -44,17 +45,12 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
             return True
 
         # 1. Authorization: Bearer <token>
-        if auth and auth.credentials == expected_token:
+        if auth and auth.credentials and secrets.compare_digest(auth.credentials, expected_token):
             return True
 
         # 2. X-API-Token / X-Guardian-Token header
         header_token = request.headers.get("X-API-Token") or request.headers.get("X-Guardian-Token")
-        if header_token and header_token == expected_token:
-            return True
-
-        # 3. Query parameter: ?token=<token>
-        query_token = request.query_params.get("token")
-        if query_token and query_token == expected_token:
+        if header_token and secrets.compare_digest(header_token, expected_token):
             return True
 
         raise HTTPException(

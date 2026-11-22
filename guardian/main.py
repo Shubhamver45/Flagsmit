@@ -85,8 +85,8 @@ def build_engine(config_path: str = "config.yaml", demo_mode: bool = False, demo
         api_url=flagsmith_url,
         admin_api_key=admin_api_key,
         environment_key=cfg.environment_key,
-        project_id=cfg.project_id,
-        environment_id=cfg.environment_id,
+        project_id=cfg.project_id or (int(os.environ["FLAGSMITH_PROJECT_ID"]) if os.environ.get("FLAGSMITH_PROJECT_ID") else None),
+        environment_id=cfg.environment_id or (int(os.environ["FLAGSMITH_ENVIRONMENT_ID"]) if os.environ.get("FLAGSMITH_ENVIRONMENT_ID") else None),
     )
 
     provider = CompositeMetricProvider()

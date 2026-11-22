@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
 [![Flagsmith](https://img.shields.io/badge/Flagsmith-Self--Hosted-purple.svg)](https://flagsmith.com/)
-[![Tests](https://img.shields.io/badge/Tests-31%20Passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/YOUR_USERNAME/guardian/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
@@ -337,7 +337,7 @@ This project was built as a hackathon submission and there are things that are r
 
 ### API Token Protection for Write Endpoints
 Guardian's write endpoints (`POST /approve`, `POST /rollback`, `POST /reset`, `POST /tick`) support token-based authentication via the `GUARDIAN_API_TOKEN` environment variable:
-* **Production**: Set `GUARDIAN_API_TOKEN=<token>` in your environment. All write requests must include either `Authorization: Bearer <token>`, `X-API-Token: <token>`, or `?token=<token>`. Unauthenticated or invalid requests receive `401 Unauthorized`.
+* **Production**: Set `GUARDIAN_API_TOKEN=<token>` in your environment. All write requests must include either `Authorization: Bearer <token>` or `X-API-Token: <token>`. Unauthenticated or invalid requests receive `401 Unauthorized`.
 * **Local Development / Demo**: If `GUARDIAN_API_TOKEN` is unset or empty, authentication is disabled so demo scripts can run without credential friction.
 * **CLI & Scripts**: Pass `--token <token>` to the `guardian` CLI or export `GUARDIAN_API_TOKEN` for `scripts/guardian-approve.sh`.
 

@@ -107,7 +107,7 @@ services:
     ports:
       - "5001:5000"
     environment:
-      FLAGSMITH_ENVIRONMENT_KEY: N6LnMxtye9LM89yM7qwv8t
+      FLAGSMITH_ENVIRONMENT_KEY: ${FLAGSMITH_ENVIRONMENT_KEY:-}
       FLAGSMITH_API_URL: http://flagsmith:8000/api/v1/
       BUG_IN_NEW_CHECKOUT: "1"
       PORT: "5000"

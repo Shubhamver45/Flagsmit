@@ -73,3 +73,29 @@ def test_flagsmith_admin_client_request_construction():
             ],
         },
     )
+
+
+def test_flagsmith_admin_client_dynamic_id_resolution():
+    mock_session = MagicMock()
+    mock_env_resp = MagicMock()
+    mock_env_resp.json.return_value = {
+        "id": 42,
+        "name": "Production",
+        "api_key": "my_env_key",
+        "project": 99,
+    }
+    mock_env_resp.raise_for_status.return_value = None
+    mock_session.get.return_value = mock_env_resp
+
+    # Initialize client without hardcoding project_id or environment_id
+    client = FlagsmithAdminClient(
+        api_url="http://mock-flagsmith:8000/api/v1",
+        admin_api_key="mock_key",
+        environment_key="my_env_key",
+        session=mock_session,
+    )
+
+    # Accessing properties dynamically queries GET /environments/{key}/
+    assert client.environment_id == 42
+    assert client.project_id == 99
+    mock_session.get.assert_called_once_with("http://mock-flagsmith:8000/api/v1/environments/my_env_key/")

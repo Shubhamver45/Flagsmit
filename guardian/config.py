@@ -49,8 +49,8 @@ class RolloutConfig:
     soak_time_seconds: int = 30
     require_approval_before_final: bool = True
     guardrails: List[Guardrail] = field(default_factory=list)
-    project_id: int = 1
-    environment_id: int = 1
+    project_id: Optional[int] = None
+    environment_id: Optional[int] = None
     environment_key: str = ""
     slack_webhook_url: Optional[str] = None
     generic_webhook_url: Optional[str] = None
@@ -94,8 +94,8 @@ def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
         soak_time_seconds=int(data.get("soak_time_seconds", 30)),
         require_approval_before_final=bool(data.get("require_approval_before_final", True)),
         guardrails=guardrails,
-        project_id=int(data.get("project_id", 1)),
-        environment_id=int(data.get("environment_id", 1)),
+        project_id=int(data["project_id"]) if data.get("project_id") is not None else None,
+        environment_id=int(data["environment_id"]) if data.get("environment_id") is not None else None,
         environment_key=data.get("environment_key", ""),
         slack_webhook_url=data.get("slack_webhook_url"),
         generic_webhook_url=data.get("generic_webhook_url"),

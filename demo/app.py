@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import secrets
 from flask import Flask, request, jsonify
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from flagsmith import Flagsmith
@@ -10,7 +11,7 @@ logger = logging.getLogger("demo_checkout")
 
 app = Flask(__name__)
 
-FLAGSMITH_ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "N6LnMxtye9LM89yM7qwv8t")
+FLAGSMITH_ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "")
 FLAGSMITH_API_URL = os.environ.get("FLAGSMITH_API_URL", "http://flagsmith:8000/api/v1/")
 BUG_IN_NEW_CHECKOUT = os.environ.get("BUG_IN_NEW_CHECKOUT", "1") == "1"
 DEMO_API_TOKEN = os.environ.get("DEMO_API_TOKEN", "")
@@ -25,9 +26,9 @@ def check_demo_auth() -> bool:
         token = auth.split(" ", 1)[1].strip()
     elif request.headers.get("X-API-Token"):
         token = request.headers.get("X-API-Token")
-    elif request.args.get("token"):
-        token = request.args.get("token")
-    return token == DEMO_API_TOKEN
+    if token and secrets.compare_digest(token, DEMO_API_TOKEN):
+        return True
+    return False
 
 logger.info(f"Initializing Flagsmith client with API {FLAGSMITH_API_URL}")
 flagsmith_client = Flagsmith(

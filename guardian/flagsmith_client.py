@@ -36,8 +36,8 @@ class FlagsmithAdminClient:
         api_url: str,
         admin_api_key: str,
         environment_key: str,
-        project_id: int,
-        environment_id: int,
+        project_id: Optional[int] = None,
+        environment_id: Optional[int] = None,
         session: Optional[Any] = None,
     ):
         import requests
@@ -47,13 +47,37 @@ class FlagsmithAdminClient:
         self.api_url = api_url
         self.admin_api_key = admin_api_key
         self.environment_key = environment_key
-        self.project_id = project_id
-        self.environment_id = environment_id
+        self._project_id = project_id
+        self._environment_id = environment_id
         self.session = session or requests.Session()
         self.session.headers.update({
             "Authorization": f"Api-Key {self.admin_api_key}",
             "Content-Type": "application/json",
         })
+
+    def get_environment_details(self) -> Dict[str, Any]:
+        """Dynamically fetch environment details by environment_key (resolves environment_id and project_id)."""
+        url = f"{self.api_url}/environments/{self.environment_key}/"
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        if self._environment_id is None and "id" in data:
+            self._environment_id = data["id"]
+        if self._project_id is None and "project" in data:
+            self._project_id = data["project"]
+        return data
+
+    @property
+    def environment_id(self) -> int:
+        if self._environment_id is None:
+            self.get_environment_details()
+        return self._environment_id
+
+    @property
+    def project_id(self) -> int:
+        if self._project_id is None:
+            self.get_environment_details()
+        return self._project_id
 
     def get_feature(self, flag_name: str) -> Dict[str, Any]:
         url = f"{self.api_url}/projects/{self.project_id}/features/"
@@ -76,7 +100,10 @@ class FlagsmithAdminClient:
         results = resp.json().get("results", [])
         if not results:
             raise ValueError(f"FeatureState for '{flag_name}' not found in environment {self.environment_key}")
-        return results[0]
+        fs = results[0]
+        if self._environment_id is None and fs.get("environment"):
+            self._environment_id = fs["environment"]
+        return fs
 
     def get_percentage_rollout(self, flag_name: str) -> float:
         """
@@ -97,13 +124,14 @@ class FlagsmithAdminClient:
         """
         fs = self.get_environment_feature_state(flag_name)
         fs_id = fs["id"]
+        env_id = fs.get("environment") or self.environment_id
         mv_values = fs.get("multivariate_feature_state_values", [])
 
         if mv_values:
             mv_id = mv_values[0]["id"]
             mv_opt_id = mv_values[0]["multivariate_feature_option"]
             payload = {
-                "environment": self.environment_id,
+                "environment": env_id,
                 "enabled": True if percentage > 0 else fs.get("enabled", True),
                 "multivariate_feature_state_values": [
                     {
@@ -116,7 +144,7 @@ class FlagsmithAdminClient:
         else:
             # Standard boolean flag: enable when percentage > 0, disable when 0
             payload = {
-                "environment": self.environment_id,
+                "environment": env_id,
                 "enabled": bool(percentage > 0),
             }
 
@@ -131,13 +159,14 @@ class FlagsmithAdminClient:
         """
         fs = self.get_environment_feature_state(flag_name)
         fs_id = fs["id"]
+        env_id = fs.get("environment") or self.environment_id
         mv_values = fs.get("multivariate_feature_state_values", [])
 
         if mv_values:
             mv_id = mv_values[0]["id"]
             mv_opt_id = mv_values[0]["multivariate_feature_option"]
             payload = {
-                "environment": self.environment_id,
+                "environment": env_id,
                 "enabled": False,
                 "multivariate_feature_state_values": [
                     {
@@ -149,7 +178,7 @@ class FlagsmithAdminClient:
             }
         else:
             payload = {
-                "environment": self.environment_id,
+                "environment": env_id,
                 "enabled": False,
             }
 
