@@ -17,11 +17,13 @@ from guardian.metrics.prometheus import PrometheusMetricSource
 from guardian.metrics.flagsmith_exp import FlagsmithExperimentMetricSource
 from guardian.metrics.registry import CompositeMetricProvider
 from guardian.engine import GuardianEngine
+from guardian.main import load_env_file
+load_env_file()
 
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
 FLAGSMITH_URL = os.environ.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
-ADMIN_KEY = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "GemuCCHz.OqzZwlKEacrst96Wl2oyAf3S38w0rVfF")
-ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "N6LnMxtye9LM89yM7qwv8t")
+ADMIN_KEY = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "")
+ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "")
 
 
 def test_live_prometheus_source():

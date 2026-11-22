@@ -4,10 +4,12 @@ import sys
 import json
 import time
 import requests
+from guardian.main import load_env_file
+load_env_file()
 
 API_URL = os.environ.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
-ADMIN_KEY = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "GemuCCHz.OqzZwlKEacrst96Wl2oyAf3S38w0rVfF")
-ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "N6LnMxtye9LM89yM7qwv8t")
+ADMIN_KEY = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "")
+ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "")
 PROJECT_ID = int(os.environ.get("FLAGSMITH_PROJECT_ID", "1"))
 ENV_ID = int(os.environ.get("FLAGSMITH_ENVIRONMENT_ID", "1"))
 

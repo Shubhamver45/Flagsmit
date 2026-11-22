@@ -10,6 +10,9 @@ import os
 import sys
 import time
 import requests
+from guardian.main import load_env_file
+load_env_file()
+
 from guardian.config import load_config
 from guardian.flagsmith_client import FlagsmithAdminClient
 from guardian.metrics.prometheus import PrometheusMetricSource
@@ -21,8 +24,8 @@ from guardian.actions.idempotency import IdempotencyManager
 from guardian.engine import GuardianEngine
 
 FLAGSMITH_URL = os.environ.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
-ADMIN_KEY = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "GemuCCHz.OqzZwlKEacrst96Wl2oyAf3S38w0rVfF")
-ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "N6LnMxtye9LM89yM7qwv8t")
+ADMIN_KEY = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "")
+ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "")
 DEMO_APP_URL = "http://localhost:5001"
 PROMETHEUS_URL = "http://localhost:9090"
 
