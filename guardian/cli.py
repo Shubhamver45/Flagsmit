@@ -24,7 +24,7 @@ def call_api(endpoint: str, base_url: str = "http://localhost:8080", data: dict 
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST" if data is not None else "GET")
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
@@ -59,6 +59,9 @@ def main():
     rollback_parser = subparsers.add_parser("rollback", help="Force instant manual rollback to 0%")
     rollback_parser.add_argument("--reason", default="Manual operator rollback", help="Rollback reason")
 
+    # Reset subcommand
+    subparsers.add_parser("reset", help="Reset rollout back to initial PENDING state (demo use)")
+
     args = parser.parse_args()
 
     if args.command == "approve":
@@ -78,6 +81,12 @@ def main():
         print(f"==> Sending rollback to Guardian at {args.url}...")
         res = call_api("/rollback", base_url=args.url, data={"reason": args.reason}, token=args.token)
         print(f"🛑 Rolled Back: {res.get('message')}")
+        print(f"State: {res.get('current_state')} | Rollout: {res.get('current_percentage')}%")
+
+    elif args.command == "reset":
+        print(f"==> Sending reset to Guardian at {args.url}...")
+        res = call_api("/reset", base_url=args.url, data={}, token=args.token)
+        print(f"🔄 Reset: {res.get('message')}")
         print(f"State: {res.get('current_state')} | Rollout: {res.get('current_percentage')}%")
 
 

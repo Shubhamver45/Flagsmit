@@ -69,7 +69,8 @@ def test_prometheus_metric_source_insufficient_samples():
 
 def test_flagsmith_experiment_source_evaluation_and_srm():
     mock_session = MagicMock()
-    # Normal experiment results payload with SRM healthy
+    # Unit-test fixture: simulated normal experiment results payload with SRM healthy
+    # Note: Clearly labeled mock fixture for unit tests
     mock_get_resp = MagicMock()
     mock_get_resp.json.return_value = {
         "results": {
@@ -79,8 +80,8 @@ def test_flagsmith_experiment_source_evaluation_and_srm():
                     {
                         "metric_id": 1,
                         "variants": {
-                            "control": {"n": 100},
-                            "variation_a": {"n": 100},
+                            "control": {"n": 100, "sum": 25.0},
+                            "variation_a": {"n": 100, "sum": 10.0},
                         },
                         "inference": {
                             "variation_a": {
@@ -216,3 +217,50 @@ def test_composite_provider_with_engine(fake_flagsmith):
     assert entry3.decision == "ROLLBACK"
     assert fake_flagsmith.current_percentage == 0.0
     assert fake_flagsmith.is_enabled is False
+
+
+def test_flagsmith_experiment_collecting_data_insufficient_samples():
+    """Unit test fixture: verify INSUFFICIENT_DATA status when Flagsmith is still collecting data."""
+    mock_session = MagicMock()
+    mock_get_resp = MagicMock()
+    # Mock payload with under 50 samples in variation arm
+    mock_get_resp.json.return_value = {
+        "results": {
+            "payload": {
+                "srm_p_value": None,
+                "metrics": [
+                    {
+                        "metric_id": 1,
+                        "variants": {
+                            "control": {"n": 30, "sum": 3.0},
+                            "variation_a": {"n": 25, "sum": 2.0},
+                        },
+                        "inference": {},
+                    }
+                ],
+            }
+        }
+    }
+    mock_get_resp.raise_for_status.return_value = None
+    mock_session.get.return_value = mock_get_resp
+
+    source = FlagsmithExperimentMetricSource(
+        api_url="http://mock:8000/api/v1",
+        admin_api_key="key",
+        environment_key="env",
+        session=mock_session,
+    )
+
+    guardrail = Guardrail(
+        name="exp_chance_worse",
+        metric_source="flagsmith_experiment",
+        comparison=">",
+        threshold=80.0,
+        experiment_id=1,
+    )
+
+    ev = source.evaluate(guardrail)
+    assert ev.status == MetricStatus.INSUFFICIENT_DATA
+    assert ev.is_breached is False
+    assert "collecting data" in ev.reason.lower()
+

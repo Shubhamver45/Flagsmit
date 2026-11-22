@@ -200,7 +200,11 @@ def test_demo_app_auth_when_token_configured(monkeypatch):
     if "prometheus_client" not in sys.modules:
         sys.modules["prometheus_client"] = MagicMock()
     if "flagsmith" not in sys.modules:
-        sys.modules["flagsmith"] = MagicMock()
+        mock_flagsmith = MagicMock()
+        mock_analytics = MagicMock()
+        mock_flagsmith.analytics = mock_analytics
+        sys.modules["flagsmith"] = mock_flagsmith
+        sys.modules["flagsmith.analytics"] = mock_analytics
 
     import demo.app as demo_app
 

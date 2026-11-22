@@ -105,11 +105,13 @@ Guardian was designed from the ground up to integrate with open-source, self-hos
    When any guardrail metric breaches its threshold, Guardian immediately calls Flagsmith to set the multivariate allocation to `0.0%` and toggle the flag to `enabled: false`, halting all exposure to the problematic variant in milliseconds.
 3. **Decoupled Experimentation & System Segment Awareness**:
    As discovered during our feasibility spike ([`docs/spike.md`](docs/spike.md)), Flagsmith's experimentation engine locks direct feature state modifications (`HTTP 409 Conflict: system_segment_modification`). Guardian decouples rollout management from experimentation segments, allowing normal rollout flags to advance while concurrently querying Flagsmith's Bayesian experimentation metrics.
-4. **Flagsmith Experimentation Visibility, SRM & Bayesian Gating**:
-   Before human approval at the `AWAITING_APPROVAL` gate, Guardian queries Flagsmith's experiment results endpoint (`GET /api/v1/environments/{key}/experiments/{id}/results/`), evaluating:
+4. **Flagsmith Real-Time Experimentation, SRM & Bayesian Gating**:
+   Before human approval at the `AWAITING_APPROVAL` gate, Guardian queries Flagsmith's experiment results endpoint (`GET /api/v1/environments/{key}/experiments/{id}/results/`), evaluating real statistical inference computed by Flagsmith from actual SDK events:
+   * **Real Event Ingestion**: Zero fabricated or seeded results. The demo app identifies users with the Flagsmith SDK, evaluates the multivariate experiment flag `checkout_experiment`, records `$flag_exposure`, and emits `checkout_completed` conversion events.
+   * **Insufficient Data Gating**: If Flagsmith is still collecting data (fewer than 50 identities per arm or fewer than 5 conversions), Guardian strictly holds and blocks operator approval.
+   * **Sample Ratio Mismatch (SRM) Detection**: Flagsmith runs a chi-squared goodness-of-fit test on variant traffic splits. If `srm_p_value < 0.001`, traffic assignment corruption is detected, an SRM warning fires, and approval is blocked with a clear reason.
    * **Chance to be Worse**: Extracted from Flagsmith's Bayesian inference (`(1.0 - chance_to_win) * 100`). If greater than the configured threshold (e.g. 10.0%), approval is strictly blocked.
-   * **Sample Ratio Mismatch (SRM)**: If `srm_p_value < 0.001`, traffic assignment corruption is detected, an SRM warning fires, and approval is blocked with a clear reason.
-   * **Live Telemetry & "As Of" Timestamp**: Rendered in real-time on Guardian's status page with the warehouse calculation timestamp (`as_of`).
+   * **Live Telemetry & Source Attribution**: Rendered in real-time on Guardian's status page with the exact text: `results computed by Flagsmith from events sent by the demo app, as of <time>`.
    * **Cooldown Protection**: Flagsmith rate-limits results refresh to 300 seconds (`HTTP 429: Expected available in 300 seconds`). Guardian requests a refresh once at the start of each stage's soak window while respecting the 300-second cooldown.
 
 ---

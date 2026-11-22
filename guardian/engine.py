@@ -138,14 +138,18 @@ class GuardianEngine:
         for ev in evaluations:
             details = getattr(ev, "details", {}) or {}
 
-            # 1. SRM Check
+            # 1. Collecting Data / Insufficient Sample Check
+            if details.get("is_collecting_data"):
+                return False, "Approval blocked: Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Statistical inference not yet available."
+
+            # 2. SRM Check
             srm_warning = details.get("srm_warning", False)
             srm_p_val = details.get("srm_p_value")
             if srm_warning or (srm_p_val is not None and srm_p_val < 0.001):
                 p_display = f"{srm_p_val:.6f}" if srm_p_val is not None else "< 0.001"
                 return False, f"Approval blocked: Sample Ratio Mismatch (SRM) detected (p-value {p_display} < 0.001). Traffic assignment is corrupted."
 
-            # 2. Bayesian Chance-to-be-Worse Check
+            # 3. Bayesian Chance-to-be-Worse Check
             chance_worse = details.get("chance_to_be_worse")
             if chance_worse is None and getattr(ev, "value", None) is not None:
                 # If metric itself is chance_to_be_worse
@@ -160,7 +164,7 @@ class GuardianEngine:
                         if chance_worse > g.threshold:
                             return False, f"Approval blocked: Bayesian chance-to-be-worse ({chance_worse:.1f}%) exceeds configured limit ({g.threshold}%)."
 
-            # 3. General Guardrail Breach
+            # 4. General Guardrail Breach
             if getattr(ev, "is_breached", False):
                 return False, f"Approval blocked: Guardrail '{ev.name}' is breached: {getattr(ev, 'reason', '')}"
 
@@ -292,12 +296,17 @@ class GuardianEngine:
                 experiment_summary = {
                     "name": "Checkout A/B Experiment",
                     "as_of": details.get("as_of"),
+                    "is_collecting_data": details.get("is_collecting_data", False),
                     "chance_to_be_worse": chance_worse,
                     "chance_to_win": details.get("chance_to_win"),
                     "lift": details.get("lift"),
                     "ci_low": details.get("ci_low"),
                     "ci_high": details.get("ci_high"),
                     "total_samples": details.get("total_samples", ev.sample_size),
+                    "control_n": details.get("control_n"),
+                    "variation_n": details.get("variation_n"),
+                    "control_conversions": details.get("control_conversions"),
+                    "variation_conversions": details.get("variation_conversions"),
                     "srm_p_value": srm_val,
                     "srm_warning": srm_warn,
                     "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),

@@ -88,35 +88,23 @@ def setup():
     print(f"Admin API Key Prefix: {key_obj.prefix}")
     print(f"Admin API Key: {raw_key}")
 
-    # 7. Warehouse Connection (ClickHouse)
+    # 7. Warehouse Connection (Flagsmith Database for SDK event collection)
     wh_conn, created = WarehouseConnection.objects.get_or_create(
         environment=env,
-        warehouse_type=WarehouseType.CLICKHOUSE.value,
         defaults={
-            "name": f"ClickHouse - {env.name}",
-            "config": {
-                "host": "clickhouse",
-                "port": 8123,
-                "database": "flagsmith_exp",
-                "username": "flagsmith",
-                "secure": False,
-            },
-            "credentials": {"password": "password"},
+            "name": f"Flagsmith Database - {env.name}",
+            "warehouse_type": WarehouseType.POSTGRES.value,
+            "config": {"source": "flagsmith_database"},
+            "credentials": {},
             "status": WarehouseConnectionStatus.CREATED,
         }
     )
-    if not created:
-        wh_conn.config = {
-            "host": "clickhouse",
-            "port": 8123,
-            "database": "flagsmith_exp",
-            "username": "flagsmith",
-            "secure": False,
-        }
-        wh_conn.credentials = {"password": "password"}
-        wh_conn.save()
+    wh_conn.warehouse_type = WarehouseType.POSTGRES.value
+    wh_conn.config = {"source": "flagsmith_database"}
+    wh_conn.credentials = {}
+    wh_conn.save()
 
-    print(f"Verifying ClickHouse Warehouse connection for environment '{env.name}'...")
+    print(f"Verifying Flagsmith Database Warehouse connection for environment '{env.name}'...")
     verify_warehouse_connection(wh_conn, persist=True)
     wh_conn.refresh_from_db()
     print(f"Warehouse Connection Status: {wh_conn.status} (detail: {wh_conn.status_detail})")
@@ -125,64 +113,107 @@ def setup():
         print(f"ERROR: Warehouse connection is not CONNECTED: {wh_conn.status_detail}", file=sys.stderr)
         sys.exit(1)
 
-    # 8. Flagsmith Experimentation: Checkout A/B Experiment & Results
-    from experimentation.models import Experiment, ExperimentResults
-    from django.utils import timezone
+    # 8. Experimentation Setup: Feature, Metric, and Experiment (Real Events Only - No Seeded Results)
+    from features.multivariate.models import MultivariateFeatureOption
+    from experimentation.models import (
+        Experiment,
+        Metric,
+        ExperimentMetric,
+        ExpectedDirection,
+        ExperimentStatus,
+    )
+    from experimentation.services import apply_experiment_rollout, transition_experiment_status
+    from experimentation.dataclasses import RolloutSpec, Variant
+    from core.dataclasses import AuthorData
 
-    exp, exp_created = Experiment.objects.get_or_create(
+    # A. Multivariate Feature for Experiment (separate from rollout flag 'new_checkout')
+    exp_feature, _ = Feature.objects.get_or_create(
         project=project,
-        name="Checkout A/B Experiment",
+        name="checkout_experiment",
         defaults={
-            "feature": feature,
-            "description": "Checkout flow conversion rate experiment",
-            "status": "RUNNING",
-            "started_at": timezone.now(),
+            "description": "Multivariate feature flag for checkout A/B experiment",
+            "type": "MULTIVARIATE",
+            "default_enabled": True,
+            "initial_value": "control",
         }
     )
-    exp.status = "RUNNING"
-    if not exp.started_at:
-        exp.started_at = timezone.now()
-    exp.save()
+    mv_opt, _ = MultivariateFeatureOption.objects.get_or_create(
+        feature=exp_feature,
+        key="variation",
+        defaults={
+            "type": "unicode",
+            "string_value": "variation",
+            "default_percentage_allocation": 50.0,
+        }
+    )
+    mv_opt.key = "variation"
+    mv_opt.default_percentage_allocation = 50.0
+    mv_opt.save()
 
-    sample_results_payload = {
-        "metrics": [
-            {
-                "metric_id": 1,
-                "variants": {
-                    "control": {"n": 1200, "sum": 120.0, "sum_squares": 120.0},
-                    "new_checkout": {"n": 1195, "sum": 145.0, "sum_squares": 145.0},
-                },
-                "inference": {
-                    "new_checkout": {
-                        "lift": 0.208,
-                        "ci_low": 0.015,
-                        "ci_high": 0.41,
-                        "chance_to_win": 0.942,
-                    }
-                },
-                "conversions_timeseries": [],
-            }
-        ],
-        "srm_p_value": 0.4821,
-        "exposures_timeseries": [],
-    }
-
-    res_obj, res_created = ExperimentResults.objects.get_or_create(
-        experiment=exp,
+    fs_exp = FeatureState.objects.filter(
+        feature=exp_feature,
         environment=env,
+        feature_segment__isnull=True,
+        identity__isnull=True,
+    ).first()
+    if not fs_exp:
+        fs_exp = FeatureState.objects.create(feature=exp_feature, environment=env, enabled=True)
+    mv_fs, _ = fs_exp.multivariate_feature_state_values.get_or_create(
+        multivariate_feature_option=mv_opt,
+        defaults={"percentage_allocation": 50.0}
+    )
+    mv_fs.percentage_allocation = 50.0
+    mv_fs.save()
+
+    # B. Conversion Metric on event 'checkout_completed'
+    metric, _ = Metric.objects.get_or_create(
+        environment=env,
+        name="Checkout Completed",
         defaults={
-            "as_of": timezone.now(),
-            "payload": sample_results_payload,
-            "is_final": False,
+            "description": "Conversion metric tracking completed checkout purchases",
+            "aggregation": "count",
+            "direction": "up",
+            "definition": {"version": 1, "event": "checkout_completed"},
         }
     )
-    if not res_created and not res_obj.payload:
-        res_obj.payload = sample_results_payload
-        res_obj.as_of = timezone.now()
-        res_obj.save()
 
-    print(f"Experiment: {exp.name} [ID={exp.id}, Status={exp.status}] (created: {exp_created})")
-    print(f"Experiment Results: [ID={res_obj.id}, as_of={res_obj.as_of}] (created: {res_created})")
+    # C. Experiment: Checkout A/B Experiment
+    exp = Experiment.objects.filter(feature=exp_feature, environment=env).first()
+    if not exp or exp.rollout_segment_id is None:
+        if not exp:
+            exp = Experiment.objects.create(
+                feature=exp_feature,
+                name="Checkout A/B Experiment",
+                hypothesis="New checkout flow increases completed checkouts without increasing errors",
+                environment=env,
+            )
+            ExperimentMetric.objects.create(
+                experiment=exp,
+                metric=metric,
+                expected_direction=ExpectedDirection.INCREASE.value,
+            )
+        apply_experiment_rollout(
+            exp,
+            RolloutSpec(
+                enabled=True,
+                rollout_percentage=100.0,
+                feature_state_value="control",
+                value_type="string",
+                variants=[Variant(id=mv_opt.id, weight=50.0)],
+                author=AuthorData.from_user(user),
+            ),
+        )
+        transition_experiment_status(exp, ExperimentStatus.RUNNING.value, user)
+        # Ensure expected variant shares (for SRM calculation) evaluate to 50% variation, 50% control
+        for fs in FeatureState.objects.filter(feature=exp_feature, environment=env):
+            fs.multivariate_feature_state_values.filter(multivariate_feature_option=mv_opt).update(percentage_allocation=50.0)
+        print(f"Configured & Started Experiment: '{exp.name}' [ID={exp.id}, status={exp.status}, segment={exp.rollout_segment_id}]")
+    else:
+        if exp.status != ExperimentStatus.RUNNING.value:
+            transition_experiment_status(exp, ExperimentStatus.RUNNING.value, user)
+        for fs in FeatureState.objects.filter(feature=exp_feature, environment=env):
+            fs.multivariate_feature_state_values.filter(multivariate_feature_option=mv_opt).update(percentage_allocation=50.0)
+        print(f"Experiment: '{exp.name}' [ID={exp.id}, status={exp.status}, segment={exp.rollout_segment_id}]")
 
     # 9. Generate .env file contents
     dotenv_content = f"""# Flagsmith API Configuration (Auto-generated by scripts/setup_flagsmith.py)

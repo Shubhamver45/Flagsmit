@@ -100,7 +100,39 @@ def test_engine_manual_rollback(engine, fake_flagsmith):
     assert fake_flagsmith.is_enabled is False
 
 
+def test_engine_approval_blocked_on_collecting_data(fake_flagsmith):
+    # Unit-test mock fixture: verifying approval blocked when Flagsmith is still collecting data
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=10,
+        require_approval_before_final=True,
+        guardrails=[
+            Guardrail(name="checkout_ab", metric_source="flagsmith_experiment", comparison=">", threshold=10.0, experiment_id=1)
+        ],
+    )
+    engine = GuardianEngine(config=cfg, flagsmith_client=fake_flagsmith)
+    engine.state_machine.current_state = RolloutState.AWAITING_APPROVAL.value
+
+    engine.latest_evaluations = [
+        MetricEvaluation(
+            name="checkout_ab",
+            value=None,
+            sample_size=12,
+            is_breached=False,
+            status=MetricStatus.INSUFFICIENT_DATA,
+            reason="Flagsmith is collecting data (under 50 identities per arm)",
+            details={"as_of": "2026-11-22T13:22:48Z", "is_collecting_data": True, "srm_warning": False},
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Flagsmith is still collecting data"):
+        engine.approve()
+
+
 def test_engine_approval_blocked_on_srm_warning(fake_flagsmith):
+    # Unit-test mock fixture: verifying approval blocked when real SRM warning detected
     from guardian.metrics.base import MetricEvaluation, MetricStatus
     cfg = RolloutConfig(
         flag_name="new_checkout",
@@ -131,6 +163,7 @@ def test_engine_approval_blocked_on_srm_warning(fake_flagsmith):
 
 
 def test_engine_approval_blocked_on_chance_to_be_worse_breach(fake_flagsmith):
+    # Unit-test mock fixture: verifying approval blocked when Bayesian chance-to-be-worse breaches threshold
     from guardian.metrics.base import MetricEvaluation, MetricStatus
     cfg = RolloutConfig(
         flag_name="new_checkout",
@@ -166,6 +199,7 @@ def test_engine_approval_blocked_on_chance_to_be_worse_breach(fake_flagsmith):
 
 
 def test_engine_approval_succeeds_with_healthy_experiment(fake_flagsmith):
+    # Unit-test mock fixture: verifying approval succeeds when experiment results pass all guardrails
     from guardian.metrics.base import MetricEvaluation, MetricStatus
     cfg = RolloutConfig(
         flag_name="new_checkout",

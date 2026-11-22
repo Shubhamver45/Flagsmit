@@ -55,16 +55,35 @@ class FlagsmithExperimentMetricSource:
         for eid in exp_ids:
             self._maybe_trigger_refresh(eid)
 
+    def _resolve_experiment_id(self, guardrail: Any) -> Optional[int]:
+        eid = getattr(guardrail, "experiment_id", None)
+        if eid:
+            return eid
+        try:
+            url = f"{self.api_url}/environments/{self.environment_key}/experiments/"
+            resp = self.session.get(url, timeout=5)
+            if resp.ok:
+                results = resp.json().get("results", [])
+                for exp in results:
+                    if exp.get("status") == "running":
+                        return exp["id"]
+                if results:
+                    return results[0]["id"]
+        except Exception as e:
+            logger.debug(f"Could not auto-resolve experiment ID: {e}")
+        return None
+
     def evaluate(self, guardrail: Any) -> MetricEvaluation:
-        experiment_id = getattr(guardrail, "experiment_id", None)
+        experiment_id = self._resolve_experiment_id(guardrail)
         if not experiment_id:
             return MetricEvaluation(
                 name=guardrail.name,
                 value=None,
                 sample_size=0,
                 is_breached=False,
-                status=MetricStatus.ERROR,
-                reason=f"Guardrail '{guardrail.name}' requires experiment_id for Flagsmith Experiment source",
+                status=MetricStatus.INSUFFICIENT_DATA,
+                reason="No active experiment found in Flagsmith environment; holding stage",
+                details={"is_collecting_data": True},
             )
 
         min_samples = getattr(guardrail, "min_samples", 50)
@@ -83,14 +102,14 @@ class FlagsmithExperimentMetricSource:
                     sample_size=0,
                     is_breached=False,
                     status=MetricStatus.INSUFFICIENT_DATA,
-                    reason="Experiment results not yet computed by warehouse; holding stage",
-                    details={"experiment_id": experiment_id},
+                    reason="Flagsmith is still collecting data (no experiment results computed yet); holding stage",
+                    details={"experiment_id": experiment_id, "is_collecting_data": True},
                 )
 
             as_of = res_data["results"].get("as_of")
             payload = res_data["results"]["payload"]
 
-            # 2. SRM (Sample Ratio Mismatch) Warning Check
+            # 3. SRM (Sample Ratio Mismatch) Warning Check
             srm_p_value = payload.get("srm_p_value")
             srm_warning = (srm_p_value is not None and srm_p_value < 0.001)
             if srm_warning:
@@ -115,11 +134,10 @@ class FlagsmithExperimentMetricSource:
                     },
                 )
 
-            # 3. Find the target metric in results payload
+            # 4. Find the target metric in results payload
             metrics_list = payload.get("metrics", [])
             target_metric = None
             for m in metrics_list:
-                # Match by metric_id or name
                 if m.get("metric_id") == getattr(guardrail, "metric_id", None) or len(metrics_list) == 1:
                     target_metric = m
                     break
@@ -132,53 +150,79 @@ class FlagsmithExperimentMetricSource:
                     is_breached=False,
                     status=MetricStatus.INSUFFICIENT_DATA,
                     reason=f"Metric not found in experiment {experiment_id} results payload",
-                    details={"as_of": as_of},
+                    details={"as_of": as_of, "is_collecting_data": True},
                 )
 
-            # 4. Enforce Minimum Sample Size
+            # 5. Check variants & collecting data threshold
+            # Flagsmith requires at least 50 identities and 5 conversions per arm
             variants = target_metric.get("variants", {})
             total_samples = sum(v.get("n", 0) for v in variants.values())
-            if total_samples < min_samples:
-                return MetricEvaluation(
-                    name=guardrail.name,
-                    value=None,
-                    sample_size=total_samples,
-                    is_breached=False,
-                    status=MetricStatus.INSUFFICIENT_DATA,
-                    reason=f"Insufficient sample size ({total_samples} < minimum {min_samples}); holding stage",
-                    details={"as_of": as_of, "total_samples": total_samples, "min_samples": min_samples},
-                )
+            control_arm = variants.get("control", {})
+            variation_arm = variants.get("variation", {}) or variants.get("treatment", {})
+            if not variation_arm:
+                for k, v in variants.items():
+                    if k != "control":
+                        variation_arm = v
+                        break
+            control_n = control_arm.get("n", 0)
+            variation_n = variation_arm.get("n", 0)
+            control_conv = control_arm.get("sum", 0.0)
+            variation_conv = variation_arm.get("sum", 0.0)
 
-            # 5. Extract Chance-to-be-Worse
             inference = target_metric.get("inference", {})
-            # Look for the treatment variant inference (non-control)
             treatment_inf = None
             for v_key, inf in inference.items():
                 if v_key != "control" and inf:
                     treatment_inf = inf
                     break
 
-            if not treatment_inf or "chance_to_win" not in treatment_inf:
+            is_collecting = (
+                control_n < 50
+                or variation_n < 50
+                or control_conv < 5
+                or variation_conv < 5
+                or not treatment_inf
+                or "chance_to_win" not in treatment_inf
+            )
+
+            if is_collecting:
                 return MetricEvaluation(
                     name=guardrail.name,
                     value=None,
                     sample_size=total_samples,
                     is_breached=False,
                     status=MetricStatus.INSUFFICIENT_DATA,
-                    reason="Inference statistical calculations not yet available; holding",
-                    details={"as_of": as_of},
+                    reason=(
+                        f"Flagsmith is collecting data ({control_n} control, {variation_n} variation identities; "
+                        f"{int(control_conv)} control, {int(variation_conv)} variation conversions). "
+                        f"Minimum 50 identities and 5 conversions per arm required."
+                    ),
+                    details={
+                        "as_of": as_of,
+                        "is_collecting_data": True,
+                        "control_n": control_n,
+                        "variation_n": variation_n,
+                        "control_conversions": control_conv,
+                        "variation_conversions": variation_conv,
+                        "total_samples": total_samples,
+                        "srm_p_value": srm_p_value,
+                        "srm_warning": False,
+                    },
                 )
 
+            # 6. Extract Chance-to-be-Worse from real Flagsmith Bayesian inference
             chance_to_win = float(treatment_inf["chance_to_win"])
-            # Chance to be worse is the posterior probability that treatment degrades the metric
             chance_to_be_worse = round((1.0 - chance_to_win) * 100.0, 2)  # Percentage 0 - 100%
 
-            # 6. Evaluate against threshold
-            is_breached = guardrail.evaluate(chance_to_be_worse)
-            status = MetricStatus.BREACH if is_breached else MetricStatus.HEALTHY
+            # 7. Evaluate against threshold
+            breached = guardrail.evaluate(chance_to_be_worse)
+            action = getattr(guardrail, "action", getattr(guardrail, "action_on_srm", "ROLLBACK")).upper()
+            is_breached = breached and (action == "ROLLBACK")
+            status = MetricStatus.BREACH if breached else MetricStatus.HEALTHY
+            action_tag = "BREACH" if is_breached else "HOLD"
             reason = (
-                f"Chance-to-be-worse {chance_to_be_worse:.1f}% {guardrail.comparison} threshold {guardrail.threshold}% (BREACH)"
-                if is_breached
+                f"Chance-to-be-worse {chance_to_be_worse:.1f}% {guardrail.comparison} threshold {guardrail.threshold}% ({action_tag})"
+                if breached
                 else f"Chance-to-be-worse {chance_to_be_worse:.1f}% healthy (threshold: {guardrail.comparison} {guardrail.threshold}%)"
             )
 
@@ -191,12 +235,17 @@ class FlagsmithExperimentMetricSource:
                 reason=reason,
                 details={
                     "as_of": as_of,
+                    "is_collecting_data": False,
                     "chance_to_win": chance_to_win,
                     "chance_to_be_worse": chance_to_be_worse,
                     "lift": treatment_inf.get("lift"),
                     "ci_low": treatment_inf.get("ci_low"),
                     "ci_high": treatment_inf.get("ci_high"),
                     "total_samples": total_samples,
+                    "control_n": control_n,
+                    "variation_n": variation_n,
+                    "control_conversions": control_conv,
+                    "variation_conversions": variation_conv,
                     "srm_p_value": srm_p_value,
                     "srm_warning": False,
                 },

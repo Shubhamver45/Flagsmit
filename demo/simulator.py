@@ -15,15 +15,17 @@ PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
 
 NUM_IDENTITIES = int(os.environ.get("NUM_IDENTITIES", "200"))
 TOTAL_REQUESTS = int(os.environ.get("TOTAL_REQUESTS", "500"))
+IDENTITY_PREFIX = os.environ.get("IDENTITY_PREFIX", "user")
 
-def run_simulation():
+def run_simulation(prefix: str = None):
+    pfx = prefix or IDENTITY_PREFIX
     print(f"=== Starting Traffic Simulation ===")
     print(f"Target: {TARGET_URL}")
-    print(f"Unique Identities: {NUM_IDENTITIES}")
+    print(f"Unique Identities: {NUM_IDENTITIES} (prefix: {pfx})")
     print(f"Total Requests: {TOTAL_REQUESTS}")
     print("-----------------------------------")
 
-    identities = [f"user_{i}" for i in range(1, NUM_IDENTITIES + 1)]
+    identities = [f"{pfx}_{i}" for i in range(1, NUM_IDENTITIES + 1)]
     
     stats = {
         "old_flow": {"requests": 0, "errors": 0},
@@ -122,7 +124,18 @@ def run_continuous(delay: float = 0.5, batch_size: int = 5):
 
 
 if __name__ == "__main__":
-    if "--continuous" in sys.argv or os.environ.get("CONTINUOUS") == "1":
+    import argparse
+    parser = argparse.ArgumentParser(description="Demo Traffic Simulator")
+    parser.add_argument("--continuous", action="store_true", help="Run continuous streaming traffic")
+    parser.add_argument("--requests", type=int, default=TOTAL_REQUESTS, help="Total requests for batch simulation")
+    parser.add_argument("--identities", type=int, default=NUM_IDENTITIES, help="Number of unique user identities")
+    parser.add_argument("--prefix", type=str, default=IDENTITY_PREFIX, help="Prefix for user identities")
+    args, _ = parser.parse_known_args()
+
+    TOTAL_REQUESTS = args.requests
+    NUM_IDENTITIES = args.identities
+
+    if args.continuous or os.environ.get("CONTINUOUS") == "1":
         run_continuous()
     else:
-        run_simulation()
+        run_simulation(prefix=args.prefix)

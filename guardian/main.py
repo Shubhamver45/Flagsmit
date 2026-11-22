@@ -41,11 +41,11 @@ def load_env_file(filepath: str = ".env") -> None:
 
 
 async def background_ticker(engine: GuardianEngine, interval: float = 5.0) -> None:
-    """Periodic evaluation ticker in the background."""
+    """Periodic evaluation ticker in the background running non-blocking in worker thread."""
     print(f"🛡️  Guardian background evaluation worker active (interval: {interval}s)")
     while True:
         try:
-            entry = engine.tick()
+            entry = await asyncio.to_thread(engine.tick)
             if entry.decision != "HOLD":
                 print(f"[{entry.decision}] {entry.from_state} ➔ {entry.to_state} | {entry.reason}")
         except Exception as e:

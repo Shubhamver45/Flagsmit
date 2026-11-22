@@ -40,8 +40,8 @@ wait_for_url() {
 }
 
 # 1. Start core infrastructure
-echo "==> Step 1: Starting Flagsmith, PostgreSQL, ClickHouse, and Prometheus..."
-docker compose up -d postgres clickhouse migrate-db flagsmith prometheus
+echo "==> Step 1: Starting Flagsmith, PostgreSQL, ClickHouse, Task Processor, and Prometheus..."
+docker compose up -d postgres clickhouse migrate-db flagsmith flagsmith-task-processor prometheus
 
 echo "==> Waiting for Flagsmith API to become ready..."
 wait_for_url "http://localhost:8000/api/v1/" "Flagsmith API" 60
@@ -63,7 +63,7 @@ set +a
 
 # 3. Start Demo App with the provisioned environment key
 echo "==> Step 3: Starting Demo Checkout App container..."
-docker compose up -d demo-app
+docker compose up -d --build demo-app
 wait_for_url "http://localhost:5001/health" "Demo Checkout App" 30
 
 # Reset demo app state: disable bug initially for healthy phase, clear counters
@@ -140,45 +140,140 @@ wait_for_state() {
     return 1
 }
 
+# Helper functions for Flagsmith Experimentation Results
+refresh_flagsmith_experiment() {
+    docker compose exec -T flagsmith python manage.py shell -c "
+from experimentation.tasks import compute_experiment_results
+from experimentation.models import Experiment, ExperimentResults
+from django.utils import timezone
+exp = Experiment.objects.first()
+if exp:
+    compute_experiment_results(exp.id)
+    ExperimentResults.objects.filter(experiment=exp).update(
+        refresh_requested_at=timezone.now() - timezone.timedelta(minutes=6)
+    )
+" > /dev/null 2>&1 || true
+    sleep 2
+}
+
+get_flagsmith_raw_results() {
+    python3 -c "
+import os, requests, json
+from dotenv import dotenv_values
+env = dotenv_values('.env')
+url = f'{env.get(\"FLAGSMITH_URL\", \"http://localhost:8000/api/v1\")}/environments/{env.get(\"FLAGSMITH_ENVIRONMENT_KEY\", \"\")}/experiments/'
+headers = {'Authorization': f'Api-Key {env.get(\"FLAGSMITH_ADMIN_API_KEY\", \"\")}'}
+try:
+    r = requests.get(url, headers=headers, timeout=5).json()
+    if r.get('results'):
+        exp_id = r['results'][0]['id']
+        res = requests.get(f'{url}{exp_id}/results/', headers=headers, timeout=5).json()
+        print(json.dumps(res, indent=2))
+except Exception as e:
+    print('Failed to read experiment results:', e)
+"
+}
+
+print_guardian_experiment_status() {
+    python3 -c "
+import urllib.request, json
+try:
+    s = json.loads(urllib.request.urlopen('http://localhost:8080/status', timeout=3).read())
+    exp = s.get('experiment')
+    if exp:
+        print(f\"  • Experiment Name   : {exp.get('name')}\")
+        print(f\"  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of {exp.get('as_of')}\")
+        print(f\"  • Chance to be Worse: {exp.get('chance_to_be_worse')}%\")
+        print(f\"  • SRM Status        : {'WARNING (Corrupt)' if exp.get('srm_warning') else 'Healthy (p-value: ' + str(exp.get('srm_p_value')) + ')'}\")
+        print(f\"  • Collecting Data   : {exp.get('is_collecting_data')}\")
+        print(f\"  • Approval Gate     : {'ELIGIBLE (Clear for 100% promotion)' if exp.get('is_eligible_for_approval') else 'BLOCKED: ' + str(exp.get('block_reason'))}\")
+except Exception as e:
+    print('  Experiment telemetry check:', e)
+"
+}
+
 echo ""
-echo "--- Phase 1: Healthy Rollout Progression ---"
+echo "--- Phase 1: Progressive Rollout Advancing to Awaiting Approval ---"
 echo "Flag 'new_checkout' is advancing through stages under healthy error rate (< 5.0%)..."
 wait_for_state "STAGE_1" 20
 wait_for_state "AWAITING_APPROVAL" 35
 
 echo ""
-echo "--- Phase 2: Human Operator Approval & Experiment Gate ---"
-echo "Rollout reached 25% and is holding for human sign-off before 100% promotion."
-echo "Verifying Flagsmith Experimentation results before approval gate..."
-python3 -c "
-import urllib.request, json
-try:
-    s = json.loads(urllib.request.urlopen('http://localhost:8080/status').read())
-    exp = s.get('experiment')
-    if exp:
-        print(f\"  • Experiment Name   : {exp.get('name')}\")
-        print(f\"  • Results As-Of     : {exp.get('as_of')}\")
-        print(f\"  • Chance to be Worse: {exp.get('chance_to_be_worse')}%\")
-        print(f\"  • SRM Status        : {'WARNING (Corrupt)' if exp.get('srm_warning') else 'Healthy (p-value: ' + str(exp.get('srm_p_value')) + ')'}\")
-        print(f\"  • Approval Gate     : {'ELIGIBLE (Clear for 100% promotion)' if exp.get('is_eligible_for_approval') else 'BLOCKED: ' + str(exp.get('block_reason'))}\")
-except Exception as e:
-    print('  Experiment telemetry check:', e)
-"
-echo "Executing: python3 -m guardian.cli approve --by operator --reason 'Pre-promotion health check passed'"
-python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check passed"
+echo "--- Phase 2 (Scenario 1): Approval Gate Blocks on Insufficient Data ---"
+echo "Rollout reached 25% and is holding before 100% promotion."
+echo "Flagsmith is actively collecting events (<50 identities/arm or <5 conversions)."
+refresh_flagsmith_experiment
+print_guardian_experiment_status
+
+echo "Attempting operator approval while data is still collecting:"
+if python3 -m guardian.cli approve --by "operator" --reason "Premature approval attempt" 2>&1; then
+    echo "❌ Error: Approval should have been blocked!"
+    exit 1
+else
+    echo "✔ As expected, operator approval is strictly blocked when Flagsmith is still collecting data."
+fi
+
+echo ""
+echo "--- Phase 3: Clean Balanced Traffic & Human Operator Sign-off ---"
+echo "Generating balanced conversion events so both variants accumulate statistical significance..."
+PYTHONPATH=. python3 demo/simulator.py --requests 180 --identities 200 > /dev/null
+refresh_flagsmith_experiment
+
+echo ""
+echo "==> Raw Flagsmith Experiment Results (Clean Statistical Inference):"
+get_flagsmith_raw_results
+
+echo ""
+echo "==> Guardian Status Check (Gate Evaluation):"
+print_guardian_experiment_status
+
+echo "Executing operator promotion approval:"
+python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check passed: lift positive, no SRM"
 wait_for_state "PROMOTED" 10
 echo "✔ Feature flag successfully promoted to 100%!"
 
 echo ""
-echo "--- Phase 3: Fault Injection (Failure Spike) ---"
+echo "--- Phase 4: Fault Injection (Failure Spike) & Automated Rollback ---"
 echo "Injecting fault into new checkout flow via Demo App (BUG_IN_NEW_CHECKOUT=1)..."
 curl -s -X POST "http://localhost:5001/toggle-bug?enabled=1" | python3 -m json.tool
 echo "Traffic simulator is now receiving ~30% payment processing errors on new_flow."
-
-echo ""
-echo "--- Phase 4: Automated Breach Detection & Instant Rollback ---"
 echo "Guardian is monitoring Prometheus PromQL guardrail: error_rate > 5.0%..."
 wait_for_state "ROLLED_BACK" 30
+echo "✔ Automated rollback to 0% completed successfully with Slack alert emitted."
+
+echo ""
+echo "--- Phase 5 (Scenario 2): SRM Anomaly Simulation & Blocked Approval Gate ---"
+echo "Resetting rollout to demonstrate SRM safety breaker..."
+python3 -m guardian.cli reset > /dev/null
+curl -s -X POST "http://localhost:5001/toggle-bug?enabled=0" > /dev/null
+curl -s -X POST "http://localhost:5001/reset-metrics" > /dev/null
+echo "Advancing back to AWAITING_APPROVAL stage..."
+wait_for_state "STAGE_1" 20
+wait_for_state "AWAITING_APPROVAL" 35
+
+echo "Simulating Sample Ratio Mismatch (SRM) by dropping exposure events for variation arm..."
+curl -s -X POST "http://localhost:5001/toggle-srm?enabled=1" | python3 -m json.tool
+echo "Sending skewed traffic to trigger real SRM in Flagsmith database..."
+PYTHONPATH=. python3 demo/simulator.py --prefix srm_user --requests 350 --identities 300 > /dev/null
+refresh_flagsmith_experiment
+
+echo ""
+echo "==> Raw Flagsmith Experiment Results (SRM Warning Detected):"
+get_flagsmith_raw_results
+
+echo ""
+echo "==> Guardian Verification of SRM Anomaly:"
+print_guardian_experiment_status
+
+echo "Attempting operator approval while SRM warning is active:"
+if python3 -m guardian.cli approve --by "operator" --reason "Approve despite SRM" 2>&1; then
+    echo "❌ Error: Approval should have been blocked by SRM warning!"
+    exit 1
+else
+    echo "✔ As expected, operator approval is strictly BLOCKED by Guardian when real SRM anomaly fires."
+fi
+
+curl -s -X POST "http://localhost:5001/toggle-srm?enabled=0" > /dev/null || true
 
 echo ""
 echo "========================================================================"

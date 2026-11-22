@@ -108,7 +108,11 @@ class RolloutStateMachine:
                     }
                     return self.current_state, RolloutDecision.ROLLBACK, ev.reason, numbers
                 if getattr(ev, "status", None) and ev.status.value == "INSUFFICIENT_DATA":
-                    insufficient_data_reasons.append(ev.reason)
+                    # Operational guardrails hold stage advancement on insufficient sample size.
+                    # Experiment data collection is evaluated at the approval gate before promotion.
+                    details = getattr(ev, "details", {}) or {}
+                    if not details.get("is_collecting_data"):
+                        insufficient_data_reasons.append(ev.reason)
 
         # Fallback to evaluating raw metric_values dictionary
         for guardrail in self.config.guardrails:

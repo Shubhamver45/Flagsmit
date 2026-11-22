@@ -4,7 +4,12 @@ import logging
 import secrets
 from flask import Flask, request, jsonify
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from flagsmith import Flagsmith
+try:
+    from flagsmith import Flagsmith
+    from flagsmith.analytics import EventProcessorConfig
+except (ImportError, AttributeError):
+    Flagsmith = None
+    EventProcessorConfig = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("demo_checkout")
@@ -13,7 +18,12 @@ app = Flask(__name__)
 
 FLAGSMITH_ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "")
 FLAGSMITH_API_URL = os.environ.get("FLAGSMITH_API_URL", "http://flagsmith:8000/api/v1/")
+FLAGSMITH_EVENTS_API_URL = os.environ.get(
+    "FLAGSMITH_EVENTS_API_URL",
+    FLAGSMITH_API_URL.replace("/v1/", "/").replace("/v1", "/")
+)
 BUG_IN_NEW_CHECKOUT = os.environ.get("BUG_IN_NEW_CHECKOUT", "1") == "1"
+SIMULATE_SRM = os.environ.get("SIMULATE_SRM", "0").lower() in ("1", "true", "yes")
 DEMO_API_TOKEN = os.environ.get("DEMO_API_TOKEN", "")
 
 def check_demo_auth() -> bool:
@@ -30,11 +40,17 @@ def check_demo_auth() -> bool:
         return True
     return False
 
-logger.info(f"Initializing Flagsmith client with API {FLAGSMITH_API_URL}")
+logger.info(f"Initializing Flagsmith client with API {FLAGSMITH_API_URL} and Events {FLAGSMITH_EVENTS_API_URL}")
 flagsmith_client = Flagsmith(
     environment_key=FLAGSMITH_ENV_KEY,
     api_url=FLAGSMITH_API_URL,
     request_timeout_seconds=3,
+    enable_events=True,
+    event_processor_config=EventProcessorConfig(
+        events_api_url=FLAGSMITH_EVENTS_API_URL,
+        flush_interval_seconds=1.0,
+        max_buffer_items=500,
+    ),
 )
 
 # Prometheus Metrics
@@ -58,11 +74,36 @@ for v in ("old_flow", "new_flow"):
 
 @app.route("/checkout", methods=["POST", "GET"])
 def checkout():
-    # Support GET or POST, with JSON body or query param
     data = request.get_json(silent=True) or {}
     user_id = request.args.get("user_id") or data.get("user_id") or f"user_{random.randint(1, 500)}"
+    force_srm = request.args.get("srm") == "1" or SIMULATE_SRM
 
-    # Evaluate feature flag for this identity
+    # 1. Request the experiment flag (checkout_experiment) for the identified user
+    exp_variant = "control"
+    try:
+        if force_srm:
+            # Severe Sample Ratio Mismatch (SRM) simulation:
+            # Heavily drop variation exposures (drop 95% of variation exposures)
+            identity_flags = flagsmith_client.get_identity_flags(identifier=user_id)
+            exp_flag = identity_flags.get_flag("checkout_experiment")
+            exp_variant = exp_flag.value if exp_flag else "control"
+            should_track = True
+            if exp_variant == "variation" and random.random() > 0.05:
+                should_track = False
+            if should_track:
+                flagsmith_client.track_exposure_event(
+                    feature_name="checkout_experiment",
+                    identifier=user_id,
+                    value=exp_variant,
+                )
+        else:
+            exp_flag = flagsmith_client.get_experiment_flag("checkout_experiment", identifier=user_id)
+            if exp_flag and exp_flag.value:
+                exp_variant = exp_flag.value
+    except Exception as e:
+        logger.warning(f"Experiment flag evaluation failed for {user_id}: {e}")
+
+    # 2. Evaluate operational rollout flag (new_checkout)
     try:
         identity_flags = flagsmith_client.get_identity_flags(identifier=user_id)
         is_new_flow = identity_flags.is_feature_enabled("new_checkout")
@@ -76,18 +117,42 @@ def checkout():
     if is_new_flow and BUG_IN_NEW_CHECKOUT and random.random() < 0.30:
         CHECKOUT_REQUESTS_TOTAL.labels(variant=variant, status="500").inc()
         CHECKOUT_ERRORS_TOTAL.labels(variant=variant).inc()
+        try:
+            flagsmith_client.flush_events()
+        except Exception:
+            pass
         return jsonify({
             "status": "error",
             "variant": variant,
+            "experiment_variant": exp_variant,
             "user_id": user_id,
             "error": "Payment processing error in new checkout flow",
         }), 500
 
-    # Normal successful checkout
+    # 3. Normal successful checkout: track 'checkout_completed' conversion event
+    # In healthy A/B test, variation converts at ~95% while control converts at ~65%
+    # demonstrating real positive lift and low chance-to-be-worse.
+    should_convert = True
+    if exp_variant == "control" and random.random() > 0.65:
+        should_convert = False
+    elif exp_variant != "control" and random.random() > 0.95:
+        should_convert = False
+
+    if should_convert:
+        try:
+            flagsmith_client.track_event(
+                event="checkout_completed",
+                identifier=user_id,
+            )
+            flagsmith_client.flush_events()
+        except Exception as e:
+            logger.warning(f"Track event checkout_completed failed for {user_id}: {e}")
+
     CHECKOUT_REQUESTS_TOTAL.labels(variant=variant, status="200").inc()
     return jsonify({
         "status": "success",
         "variant": variant,
+        "experiment_variant": exp_variant,
         "user_id": user_id,
         "message": f"Checkout succeeded via {variant}",
     }), 200
@@ -109,6 +174,19 @@ def toggle_bug():
     logger.info(f"BUG_IN_NEW_CHECKOUT toggled to {BUG_IN_NEW_CHECKOUT}")
     return jsonify({"bug_enabled": BUG_IN_NEW_CHECKOUT}), 200
 
+@app.route("/toggle-srm", methods=["POST", "GET"])
+def toggle_srm():
+    if not check_demo_auth():
+        return jsonify({"error": "Unauthorized: Invalid or missing API token"}), 401
+    global SIMULATE_SRM
+    val = request.args.get("enabled")
+    if val is not None:
+        SIMULATE_SRM = val.lower() in ("1", "true", "yes")
+    else:
+        SIMULATE_SRM = not SIMULATE_SRM
+    logger.info(f"SIMULATE_SRM toggled to {SIMULATE_SRM}")
+    return jsonify({"simulate_srm": SIMULATE_SRM}), 200
+
 @app.route("/reset-metrics", methods=["POST", "GET"])
 def reset_metrics():
     if not check_demo_auth():
@@ -127,6 +205,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "bug_enabled": BUG_IN_NEW_CHECKOUT,
+        "simulate_srm": SIMULATE_SRM,
         "flagsmith_api": FLAGSMITH_API_URL,
     }), 200
 

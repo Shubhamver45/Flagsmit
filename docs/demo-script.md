@@ -26,43 +26,45 @@ Open the following browser tabs (or split-screen layout):
 
 ---
 
-### Act 2: Healthy Rollout Advancing, Experiment Gating & Human Approval (0:45 – 1:35)
+### Act 2: Healthy Rollout Advancing, Experiment Gating & Human Approval (0:45 – 1:45)
 **Visual**: Screen showing Guardian Dashboard (`:8080`) side-by-side with Flagsmith (`:8000`).
 
 > *"Here is Guardian in action with our demo e-commerce application gated by the Flagsmith feature flag `new_checkout`.*  
 > 
-> *Guardian is configured with a staged rollout pipeline: 1%, 5%, 25%, and 100%, with a soak duration and automated guardrails.*  
+> *Guardian is configured with a staged rollout pipeline: 1%, 5%, 25%, and 100%, with automated guardrails and human approval.*  
 > 
 > *In the background, our simulator is sending live traffic across hundreds of distinct user identities. As you can see on the dashboard, the error rate is well below our 5% threshold.*  
 > 
 > *Guardian advances from 1% to 5%, and then to 25%. In Flagsmith, you can see the multivariate allocation updating live through the Admin API.*  
 > 
-> *Notice what happens before 100%: Guardian enters **AWAITING_APPROVAL**. Rather than blindly shipping to everyone, Guardian reads the live experiment results from Flagsmith Experimentation for the checkout A/B test.*  
+> *Notice what happens before 100%: Guardian enters **AWAITING_APPROVAL**. Rather than blindly shipping to everyone, Guardian queries the real experiment results from Flagsmith Experimentation for `checkout_experiment`.*  
 > 
-> *On the status page, you can see the dedicated Flagsmith Experimentation card: the Bayesian Chance-to-be-Worse (5.8%), the Sample Ratio Mismatch (SRM) status (p-value: 0.4821), relative lift (+20.8%), and the exact "as of" calculation timestamp from the warehouse.*  
+> *First, if Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions), Guardian identifies this and strictly blocks approval with a clear message: 'Flagsmith is collecting data'.*  
 > 
-> *Crucially: if an SRM warning had fired, or if chance-to-be-worse exceeded our 10.0% threshold, the Approve action would be strictly blocked with a clear reason.*  
+> *Second, Guardian detects Sample Ratio Mismatch (SRM). If traffic assignment becomes corrupted—for example, if exposures on a variation arm are dropped—Flagsmith's chi-squared test detects it with p < 0.001. Guardian immediately flags an SRM Warning on the dashboard and disables the Approve button.*  
 > 
-> *Because our experiment is healthy, the operator can safely approve directly with one click on the dashboard, or with a single CLI command:*  
+> *Once balanced traffic flows and Flagsmith computes positive lift (+38.6%) with a healthy SRM p-value, Guardian verifies the Bayesian chance-to-be-worse is safe. The status page displays: 'results computed by Flagsmith from events sent by the demo app, as of <time>'.*  
+> 
+> *Now the operator can safely sign off via the dashboard or with a single CLI command:*  
 > ```bash
-> python3 -m guardian.cli approve --by "release-lead" --reason "Metrics healthy"
+> python3 -m guardian.cli approve --by "release-lead" --reason "Flagsmith experiment verified: lift positive, no SRM"
 > ```  
 > *The rollout advances to 100%—fully promoted!"*
 
 ---
 
-### Act 3: Fault Injection, Auto-Rollback & Slack Alert (1:35 – 2:25)
+### Act 3: Fault Injection, Auto-Rollback & Slack Alert (1:45 – 2:30)
 **Visual**: Trigger bug injection, watch Guardian immediately detect and rollback.
 
-> *"Now, let's see what happens during a real incident.*  
+> *"Now, let's see what happens during a real operational incident.*  
 > 
-> *Let's reset the rollout and inject a 30% failure rate into the new checkout flow:*  
+> *Let's inject a 30% failure rate into the new checkout flow:*  
 > ```bash
 > curl -X POST "http://localhost:5001/toggle-bug?enabled=1"
 > ```  
 > *Immediately, users on the new flow start encountering payment errors. Prometheus scrapes the error count.*  
 > 
-> *Within seconds, Guardian's Prometheus guardrail evaluates the error rate: it has spiked to **28.9%**, well above our 5.0% threshold.*  
+> *Within seconds, Guardian's Prometheus guardrail evaluates the error rate: it has spiked well above our 5.0% threshold.*  
 > 
 > *Without any human intervention:*  
 > 1. *Guardian transitions state to **ROLLED_BACK**.*  

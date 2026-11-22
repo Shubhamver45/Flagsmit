@@ -349,7 +349,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <span>🧪 Flagsmith Experimentation (Checkout A/B)</span>
           <span id="exp-status-pill" class="status-pill pill-healthy">HEALTHY</span>
         </div>
-        <span id="exp-as-of" class="mono" style="font-size: 11px; color: var(--text-muted);">As of: --</span>
+        <span id="exp-as-of" class="mono" style="font-size: 11px; color: var(--text-muted);">results computed by Flagsmith from events sent by the demo app, as of --</span>
       </div>
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 12px;">
         <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--card-border);">
@@ -458,15 +458,20 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         document.getElementById('experiment-card').style.display = 'block';
         const exp = data.experiment;
         const asOfStr = exp.as_of ? new Date(exp.as_of).toUTCString() : (exp.as_of || '--');
-        document.getElementById('exp-as-of').innerText = 'As of: ' + asOfStr;
+        document.getElementById('exp-as-of').innerText = 'results computed by Flagsmith from events sent by the demo app, as of ' + asOfStr;
 
-        const cwVal = exp.chance_to_be_worse !== null && exp.chance_to_be_worse !== undefined ? (typeof exp.chance_to_be_worse === 'number' ? exp.chance_to_be_worse.toFixed(1) + '%' : exp.chance_to_be_worse) : '--';
         const cwEl = document.getElementById('exp-chance-worse');
-        cwEl.innerText = cwVal;
-        if (exp.chance_to_be_worse !== null && exp.chance_to_be_worse > 10.0) {
-          cwEl.style.color = '#f87171';
+        if (exp.is_collecting_data) {
+          cwEl.innerText = 'Collecting data...';
+          cwEl.style.color = '#fbbf24';
         } else {
-          cwEl.style.color = '#34d399';
+          const cwVal = exp.chance_to_be_worse !== null && exp.chance_to_be_worse !== undefined ? (typeof exp.chance_to_be_worse === 'number' ? exp.chance_to_be_worse.toFixed(1) + '%' : exp.chance_to_be_worse) : '--';
+          cwEl.innerText = cwVal;
+          if (exp.chance_to_be_worse !== null && exp.chance_to_be_worse > 10.0) {
+            cwEl.style.color = '#f87171';
+          } else {
+            cwEl.style.color = '#34d399';
+          }
         }
 
         const srmEl = document.getElementById('exp-srm');
@@ -475,6 +480,10 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           srmEl.innerText = 'SRM DETECTED!';
           srmEl.style.color = '#f87171';
           srmPEl.innerText = `p-value: ${exp.srm_p_value !== null && exp.srm_p_value !== undefined ? exp.srm_p_value.toFixed(6) : '--'} (< 0.001)`;
+        } else if (exp.is_collecting_data && exp.srm_p_value === null) {
+          srmEl.innerText = 'Collecting data';
+          srmEl.style.color = '#fbbf24';
+          srmPEl.innerText = 'Awaiting 100+ identities';
         } else {
           srmEl.innerText = 'No SRM';
           srmEl.style.color = '#34d399';
@@ -487,7 +496,14 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
         const pillEl = document.getElementById('exp-status-pill');
         const gateNoteEl = document.getElementById('exp-gate-note');
-        if (!exp.is_eligible_for_approval && exp.block_reason) {
+        if (exp.is_collecting_data) {
+          pillEl.className = 'status-pill pill-insufficient';
+          pillEl.innerText = 'COLLECTING DATA';
+          gateNoteEl.style.background = 'rgba(245, 158, 11, 0.1)';
+          gateNoteEl.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+          gateNoteEl.style.color = '#fbbf24';
+          gateNoteEl.innerHTML = '⏳ <strong>Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Approval gate blocked.</strong>';
+        } else if (!exp.is_eligible_for_approval && exp.block_reason) {
           pillEl.className = 'status-pill pill-breached';
           pillEl.innerText = 'GATE BLOCKED';
           gateNoteEl.style.background = 'rgba(239, 68, 68, 0.1)';
