@@ -177,6 +177,8 @@ python3 -c "
 import urllib.request, json
 data = json.loads(urllib.request.urlopen('http://localhost:8080/status').read())
 for e in data.get('timeline', []):
-    print(f\"  [{e['decision']}] {e['from_state']} ➔ {e['to_state']} ({e['target_percentage']}%) | {e['reason']}\")
+    pct = e.get('numbers', {}).get('target_percentage', e.get('numbers', {}).get('current_percentage', ''))
+    pct_str = f' ({pct}%)' if pct != '' else ''
+    print(f\"  [{e.get('decision', 'INFO')}] {e.get('from_state', '?')} ➔ {e.get('to_state', '?')}{pct_str} | {e.get('reason', '')}\")
 "
 echo "========================================================================"
