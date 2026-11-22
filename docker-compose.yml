@@ -1,3 +1,5 @@
+name: flagsmith
+
 # Flagsmith local deployment with Experimentation & ClickHouse
 # Based on official https://github.com/Flagsmith/flagsmith/blob/main/docker-compose.yml
 
