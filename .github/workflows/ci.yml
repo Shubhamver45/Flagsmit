@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  test:
+    name: Run pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pytest fastapi httpx pydantic requests pyyaml prometheus-client flask
+
+      - name: Run unit tests
+        run: python -m pytest -v tests/
+
+      - name: Verify imports (smoke test)
+        run: python -c "from guardian.engine import GuardianEngine; from guardian.state_machine import StateMachine; from guardian.flagsmith_client import FlagsmithAdminClient; print('All imports OK')"

@@ -42,3 +42,16 @@ ENV/
 .DS_Store
 Thumbs.db
 docker-compose.official.yml
+
+# Guardian runtime artifacts
+*.idempotency.json
+guardian_audit_*.jsonl
+guardian_audit.jsonl
+
+# Docker volumes and local data
+postgres_data/
+clickhouse_data/
+
+# IDE
+.idea/
+.vscode/

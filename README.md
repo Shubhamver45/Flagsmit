@@ -5,7 +5,9 @@
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
 [![Flagsmith](https://img.shields.io/badge/Flagsmith-Self--Hosted-purple.svg)](https://flagsmith.com/)
-[![Tests](https://img.shields.io/badge/Tests-27%20Passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-28%20Passed-brightgreen.svg)](tests/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/YOUR_USERNAME/guardian/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 ---
 
@@ -311,3 +313,33 @@ python3 -m pytest -v tests/
 * **Decoupled Experiment & Rollout Architecture**: Resilient against Flagsmith's experiment system segment lock.
 * **Small Commits & Clean History**: Git commit history tracks every phase systematically.
 * **No Secrets in Git**: All sensitive master keys and tokens are loaded strictly from `.env`.
+
+---
+
+## Honest Limitations
+
+This project was built as a hackathon submission and there are things that are real and things that are not yet production-ready. Here is a candid list:
+
+| Area | Status |
+|------|--------|
+| **Flagsmith experiment results / Bayesian metrics** | Fully implemented in `guardian/metrics/flagsmith_exp.py` and unit-tested (tests for `chance_to_win`, SRM detection, sample size gating). **Not active** in the demo `config.yaml` guardrails — demo uses Prometheus error-rate only, because ClickHouse experimentation requires a configured Flagsmith paid plan or self-hosted ClickHouse with the experiment events pipeline running. |
+| **SRM and chance_to_be_worse guardrails** | Code is there, unit tests pass, but the demo does **not** trigger these paths end-to-end. The demo rolls back via the Prometheus `error_rate > 0.05` guardrail. |
+| **Webhook alerts (Slack / generic)** | Fire only when `SLACK_WEBHOOK_URL` or `GENERIC_WEBHOOK_URL` are set in `.env`. Not configured in the default demo setup. |
+| **Idempotency persistence** | Idempotency keys are stored in-memory. A Guardian restart will re-fire actions once. Production use should persist the idempotency store to disk or Redis. |
+| **Audit log persistence** | The append-only audit log lives in memory and in-process only. It is lost on restart. A production deployment would write to a database or append to a file. |
+| **Multi-flag support** | Guardian currently manages a single flag per process (from `config.yaml`). Running multiple Guardian instances — one per flag — is the workaround. |
+| **Git history** | Early development commits contain local-only Flagsmith dev credentials (a self-hosted instance with no network exposure). These are harmless for a local demo setup but would need to be rotated and history-rewritten before connecting a real production Flagsmith deployment. |
+| **Docker image** | The root `Dockerfile` is provided for Guardian but is **not tested in the demo** — the demo runs Guardian directly with `python -m guardian.main` for simplicity. |
+
+---
+
+## AI Tools Used
+
+This entire project — from architecture design to implementation, debugging, test writing, demo rehearsal automation, and documentation — was built with the assistance of **[Google Antigravity](https://antigravity.dev)** (powered by Google DeepMind's Gemini model). Antigravity is an AI coding assistant embedded in the development environment that handles multi-step agentic tasks including real API exploration, code generation, iterative debugging, and documentation.
+
+Specific contributions:
+- **Architecture**: The state machine design, metric source abstraction, and idempotency layer were designed through iterative prompting.
+- **API feasibility spike**: Antigravity executed live `curl`/`requests` calls against a local Flagsmith instance to discover the actual API surface, documenting findings in `docs/spike.md`.
+- **All Python code**: `guardian/`, `demo/`, `tests/`, and all scripts were written and debugged by the agent.
+- **Demo rehearsal**: The 3-minute demo was rehearsed end-to-end multiple times and flaky behaviour was fixed by the agent autonomously.
+- **Documentation**: This README, `docs/spike.md`, `docs/demo-script.md`, and all config comments were written by the agent.
