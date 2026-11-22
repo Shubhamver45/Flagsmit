@@ -105,11 +105,12 @@ Guardian was designed from the ground up to integrate with open-source, self-hos
    When any guardrail metric breaches its threshold, Guardian immediately calls Flagsmith to set the multivariate allocation to `0.0%` and toggle the flag to `enabled: false`, halting all exposure to the problematic variant in milliseconds.
 3. **Decoupled Experimentation & System Segment Awareness**:
    As discovered during our feasibility spike ([`docs/spike.md`](docs/spike.md)), Flagsmith's experimentation engine locks direct feature state modifications (`HTTP 409 Conflict: system_segment_modification`). Guardian decouples rollout management from experimentation segments, allowing normal rollout flags to advance while concurrently querying Flagsmith's Bayesian experimentation metrics.
-4. **Bayesian Experimentation & SRM Detection**:
-   Guardian queries Flagsmith's experiment results endpoint (`GET /api/v1/environments/{key}/experiments/{id}/results/`), evaluating:
-   * **Chance to be Worse**: Calculated as `1.0 - chance_to_win`. If > 90%, Guardian halts advancement.
-   * **Sample Ratio Mismatch (SRM)**: If `srm_p_value < 0.001`, an allocation anomaly is detected and Guardian triggers an immediate hold or rollback.
-   * **Cooldown Protection**: Flagsmith throttles experiment calculation refreshes to 300 seconds (HTTP 429). Guardian's `FlagsmithExperimentMetricSource` enforces internal caching to respect this limit.
+4. **Flagsmith Experimentation Visibility, SRM & Bayesian Gating**:
+   Before human approval at the `AWAITING_APPROVAL` gate, Guardian queries Flagsmith's experiment results endpoint (`GET /api/v1/environments/{key}/experiments/{id}/results/`), evaluating:
+   * **Chance to be Worse**: Extracted from Flagsmith's Bayesian inference (`(1.0 - chance_to_win) * 100`). If greater than the configured threshold (e.g. 10.0%), approval is strictly blocked.
+   * **Sample Ratio Mismatch (SRM)**: If `srm_p_value < 0.001`, traffic assignment corruption is detected, an SRM warning fires, and approval is blocked with a clear reason.
+   * **Live Telemetry & "As Of" Timestamp**: Rendered in real-time on Guardian's status page with the warehouse calculation timestamp (`as_of`).
+   * **Cooldown Protection**: Flagsmith rate-limits results refresh to 300 seconds (`HTTP 429: Expected available in 300 seconds`). Guardian requests a refresh once at the start of each stage's soak window while respecting the 300-second cooldown.
 
 ---
 
@@ -218,13 +219,15 @@ guardrails:
     description: "Rollback to 0 if new flow error rate exceeds 5.0%"
 
   # Flagsmith Experimentation guardrail
-  - name: "checkout_experiment_guardrail"
+  - name: "checkout_ab_chance_to_be_worse"
     metric_source: "flagsmith_experiment"
-    comparison: ">"
-    threshold: 0.90
     experiment_id: 1
     metric_id: 1
-    description: "Hold or rollback if experiment indicates >90% chance to be worse or SRM detected"
+    comparison: ">"
+    threshold: 10.0
+    min_samples: 50
+    action_on_srm: "HOLD"
+    description: "Hold rollout if Bayesian chance-to-be-worse > 10.0% or if SRM warning fires"
 ```
 
 ### Configuration Fields

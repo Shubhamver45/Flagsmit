@@ -32,3 +32,12 @@ class CompositeMetricProvider:
 
     def evaluate_all(self, guardrails: List[Any]) -> List[MetricEvaluation]:
         return [self.evaluate_guardrail(g) for g in guardrails]
+
+    def notify_stage_started(self, stage_name: str, guardrails: Optional[List[Any]] = None) -> None:
+        """Propagate stage transition to metric sources (e.g. to trigger refresh on soak start)."""
+        for source in self._sources.values():
+            if hasattr(source, "notify_stage_started"):
+                try:
+                    source.notify_stage_started(stage_name, guardrails=guardrails)
+                except Exception:
+                    pass

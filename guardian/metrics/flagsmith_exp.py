@@ -40,6 +40,21 @@ class FlagsmithExperimentMetricSource:
         self._last_refresh_requested: Dict[int, float] = {}
         self._cached_results: Dict[int, Dict[str, Any]] = {}
 
+    def notify_stage_started(self, stage_name: str, guardrails: Optional[List[Any]] = None) -> None:
+        """
+        Respects the 5-minute results refresh limit:
+        Called once at the start of a stage's soak window to trigger a background
+        results recalculation if the 300-second cooldown has elapsed.
+        """
+        exp_ids = set()
+        if guardrails:
+            for g in guardrails:
+                eid = getattr(g, "experiment_id", None)
+                if eid:
+                    exp_ids.add(eid)
+        for eid in exp_ids:
+            self._maybe_trigger_refresh(eid)
+
     def evaluate(self, guardrail: Any) -> MetricEvaluation:
         experiment_id = getattr(guardrail, "experiment_id", None)
         if not experiment_id:
@@ -72,11 +87,13 @@ class FlagsmithExperimentMetricSource:
                     details={"experiment_id": experiment_id},
                 )
 
+            as_of = res_data["results"].get("as_of")
             payload = res_data["results"]["payload"]
 
-            # 3. SRM (Sample Ratio Mismatch) Warning Check
+            # 2. SRM (Sample Ratio Mismatch) Warning Check
             srm_p_value = payload.get("srm_p_value")
-            if srm_p_value is not None and srm_p_value < 0.001:
+            srm_warning = (srm_p_value is not None and srm_p_value < 0.001)
+            if srm_warning:
                 is_breached = (action_on_srm == "ROLLBACK")
                 status = MetricStatus.SRM_BREACH if not is_breached else MetricStatus.BREACH
                 reason = (
@@ -90,10 +107,15 @@ class FlagsmithExperimentMetricSource:
                     is_breached=is_breached,
                     status=status,
                     reason=reason,
-                    details={"srm_p_value": srm_p_value, "action": action_on_srm},
+                    details={
+                        "as_of": as_of,
+                        "srm_p_value": srm_p_value,
+                        "srm_warning": True,
+                        "action": action_on_srm,
+                    },
                 )
 
-            # 4. Find the target metric in results payload
+            # 3. Find the target metric in results payload
             metrics_list = payload.get("metrics", [])
             target_metric = None
             for m in metrics_list:
@@ -110,9 +132,10 @@ class FlagsmithExperimentMetricSource:
                     is_breached=False,
                     status=MetricStatus.INSUFFICIENT_DATA,
                     reason=f"Metric not found in experiment {experiment_id} results payload",
+                    details={"as_of": as_of},
                 )
 
-            # 5. Enforce Minimum Sample Size
+            # 4. Enforce Minimum Sample Size
             variants = target_metric.get("variants", {})
             total_samples = sum(v.get("n", 0) for v in variants.values())
             if total_samples < min_samples:
@@ -123,10 +146,10 @@ class FlagsmithExperimentMetricSource:
                     is_breached=False,
                     status=MetricStatus.INSUFFICIENT_DATA,
                     reason=f"Insufficient sample size ({total_samples} < minimum {min_samples}); holding stage",
-                    details={"total_samples": total_samples, "min_samples": min_samples},
+                    details={"as_of": as_of, "total_samples": total_samples, "min_samples": min_samples},
                 )
 
-            # 6. Extract Chance-to-be-Worse
+            # 5. Extract Chance-to-be-Worse
             inference = target_metric.get("inference", {})
             # Look for the treatment variant inference (non-control)
             treatment_inf = None
@@ -143,13 +166,14 @@ class FlagsmithExperimentMetricSource:
                     is_breached=False,
                     status=MetricStatus.INSUFFICIENT_DATA,
                     reason="Inference statistical calculations not yet available; holding",
+                    details={"as_of": as_of},
                 )
 
             chance_to_win = float(treatment_inf["chance_to_win"])
             # Chance to be worse is the posterior probability that treatment degrades the metric
-            chance_to_be_worse = (1.0 - chance_to_win) * 100.0  # Percentage 0 - 100%
+            chance_to_be_worse = round((1.0 - chance_to_win) * 100.0, 2)  # Percentage 0 - 100%
 
-            # 7. Evaluate against threshold
+            # 6. Evaluate against threshold
             is_breached = guardrail.evaluate(chance_to_be_worse)
             status = MetricStatus.BREACH if is_breached else MetricStatus.HEALTHY
             reason = (
@@ -166,11 +190,15 @@ class FlagsmithExperimentMetricSource:
                 status=status,
                 reason=reason,
                 details={
+                    "as_of": as_of,
                     "chance_to_win": chance_to_win,
                     "chance_to_be_worse": chance_to_be_worse,
                     "lift": treatment_inf.get("lift"),
+                    "ci_low": treatment_inf.get("ci_low"),
+                    "ci_high": treatment_inf.get("ci_high"),
                     "total_samples": total_samples,
                     "srm_p_value": srm_p_value,
+                    "srm_warning": False,
                 },
             )
 

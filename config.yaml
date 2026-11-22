@@ -26,3 +26,13 @@ guardrails:
     sample_size_query: "sum(checkout_requests_total)"
     min_samples: 25
     description: "Trigger immediate rollback to 0% if new flow error rate exceeds 5.0%"
+
+  - name: "checkout_ab_chance_to_be_worse"
+    metric_source: "flagsmith_experiment"
+    experiment_id: 1
+    metric_id: 1
+    comparison: ">"
+    threshold: 10.0
+    min_samples: 50
+    action_on_srm: "HOLD"
+    description: "Hold rollout if Bayesian chance-to-be-worse > 10.0% or if SRM warning fires"

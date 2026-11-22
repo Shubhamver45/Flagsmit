@@ -89,6 +89,8 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
                 "current_percentage": engine.current_percentage,
                 "audit_entry": entry.to_dict(),
             }
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 

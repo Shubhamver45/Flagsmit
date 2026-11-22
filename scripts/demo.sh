@@ -147,8 +147,23 @@ wait_for_state "STAGE_1" 20
 wait_for_state "AWAITING_APPROVAL" 35
 
 echo ""
-echo "--- Phase 2: Human Operator Approval ---"
+echo "--- Phase 2: Human Operator Approval & Experiment Gate ---"
 echo "Rollout reached 25% and is holding for human sign-off before 100% promotion."
+echo "Verifying Flagsmith Experimentation results before approval gate..."
+python3 -c "
+import urllib.request, json
+try:
+    s = json.loads(urllib.request.urlopen('http://localhost:8080/status').read())
+    exp = s.get('experiment')
+    if exp:
+        print(f\"  • Experiment Name   : {exp.get('name')}\")
+        print(f\"  • Results As-Of     : {exp.get('as_of')}\")
+        print(f\"  • Chance to be Worse: {exp.get('chance_to_be_worse')}%\")
+        print(f\"  • SRM Status        : {'WARNING (Corrupt)' if exp.get('srm_warning') else 'Healthy (p-value: ' + str(exp.get('srm_p_value')) + ')'}\")
+        print(f\"  • Approval Gate     : {'ELIGIBLE (Clear for 100% promotion)' if exp.get('is_eligible_for_approval') else 'BLOCKED: ' + str(exp.get('block_reason'))}\")
+except Exception as e:
+    print('  Experiment telemetry check:', e)
+"
 echo "Executing: python3 -m guardian.cli approve --by operator --reason 'Pre-promotion health check passed'"
 python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check passed"
 wait_for_state "PROMOTED" 10

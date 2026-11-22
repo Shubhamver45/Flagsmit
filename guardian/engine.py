@@ -77,6 +77,13 @@ class GuardianEngine:
             now=now,
         )
 
+        # Notify metric providers at the start of a new stage soak window
+        if new_state != prev_state and hasattr(self.metric_provider, "notify_stage_started"):
+            try:
+                self.metric_provider.notify_stage_started(new_state, guardrails=self.config.guardrails)
+            except Exception:
+                pass
+
         stage_idx = self.state_machine.current_stage_index
         should_run = self.idempotency_manager.should_execute(
             flag_name=self.config.flag_name,
@@ -115,15 +122,64 @@ class GuardianEngine:
 
         return entry
 
+    def check_approval_eligibility(self) -> tuple[bool, Optional[str]]:
+        """
+        Validates whether human approval can proceed before the final 100% promotion.
+        Approval is blocked if:
+        1. Sample Ratio Mismatch (SRM) warning is active (p-value < 0.001).
+        2. Bayesian chance_to_be_worse exceeds the configured limit.
+        3. Any operational guardrail is in a BREACH state.
+        """
+        evaluations = self.latest_evaluations
+        if not evaluations and hasattr(self.metric_provider, "evaluate_all"):
+            evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
+            self.latest_evaluations = evaluations
+
+        for ev in evaluations:
+            details = getattr(ev, "details", {}) or {}
+
+            # 1. SRM Check
+            srm_warning = details.get("srm_warning", False)
+            srm_p_val = details.get("srm_p_value")
+            if srm_warning or (srm_p_val is not None and srm_p_val < 0.001):
+                p_display = f"{srm_p_val:.6f}" if srm_p_val is not None else "< 0.001"
+                return False, f"Approval blocked: Sample Ratio Mismatch (SRM) detected (p-value {p_display} < 0.001). Traffic assignment is corrupted."
+
+            # 2. Bayesian Chance-to-be-Worse Check
+            chance_worse = details.get("chance_to_be_worse")
+            if chance_worse is None and getattr(ev, "value", None) is not None:
+                # If metric itself is chance_to_be_worse
+                for g in self.config.guardrails:
+                    if g.name == ev.name and g.metric_source == "flagsmith_experiment":
+                        chance_worse = ev.value
+                        break
+
+            if chance_worse is not None:
+                for g in self.config.guardrails:
+                    if g.name == ev.name and g.metric_source == "flagsmith_experiment":
+                        if chance_worse > g.threshold:
+                            return False, f"Approval blocked: Bayesian chance-to-be-worse ({chance_worse:.1f}%) exceeds configured limit ({g.threshold}%)."
+
+            # 3. General Guardrail Breach
+            if getattr(ev, "is_breached", False):
+                return False, f"Approval blocked: Guardrail '{ev.name}' is breached: {getattr(ev, 'reason', '')}"
+
+        return True, None
+
     def approve(self, now: Optional[float] = None) -> AuditEntry:
         """
         Operator action: Approve final promotion when in AWAITING_APPROVAL.
+        Strictly blocked if SRM fires or chance_to_be_worse exceeds configured threshold.
         """
         if self.state_machine.current_state != RolloutState.AWAITING_APPROVAL.value:
             raise ValueError(
                 f"Cannot approve rollout: Current state is '{self.state_machine.current_state}', "
                 f"expected '{RolloutState.AWAITING_APPROVAL.value}'"
             )
+
+        eligible, block_reason = self.check_approval_eligibility()
+        if not eligible:
+            raise ValueError(block_reason)
 
         self.state_machine.approve()
         return self.tick(now=now)
@@ -216,6 +272,40 @@ class GuardianEngine:
         if self.state_machine.stage_entered_at:
             soak_elapsed = max(0.0, round(now - self.state_machine.stage_entered_at, 1))
 
+        # Build experiment results summary if present in guardrails
+        experiment_summary = None
+        for ev in (self.latest_evaluations or []):
+            details = getattr(ev, "details", {}) or {}
+            is_exp = (
+                "as_of" in details
+                or getattr(ev, "name", "").startswith("checkout_ab")
+                or any(g.name == ev.name and g.metric_source == "flagsmith_experiment" for g in self.config.guardrails)
+            )
+            if is_exp:
+                srm_val = details.get("srm_p_value")
+                srm_warn = bool(details.get("srm_warning", False) or (srm_val is not None and srm_val < 0.001))
+                chance_worse = details.get("chance_to_be_worse")
+                if chance_worse is None and getattr(ev, "value", None) is not None:
+                    chance_worse = ev.value
+
+                eligible, block_reason = self.check_approval_eligibility()
+                experiment_summary = {
+                    "name": "Checkout A/B Experiment",
+                    "as_of": details.get("as_of"),
+                    "chance_to_be_worse": chance_worse,
+                    "chance_to_win": details.get("chance_to_win"),
+                    "lift": details.get("lift"),
+                    "ci_low": details.get("ci_low"),
+                    "ci_high": details.get("ci_high"),
+                    "total_samples": details.get("total_samples", ev.sample_size),
+                    "srm_p_value": srm_val,
+                    "srm_warning": srm_warn,
+                    "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
+                    "is_eligible_for_approval": eligible,
+                    "block_reason": block_reason,
+                }
+                break
+
         return {
             "flag_name": self.config.flag_name,
             "state": self.state_machine.current_state,
@@ -226,6 +316,7 @@ class GuardianEngine:
             "soak_time_seconds": self.config.soak_time_seconds,
             "soak_elapsed_seconds": soak_elapsed,
             "guardrails": guardrail_reports,
+            "experiment": experiment_summary,
             "timeline": [e.to_dict() for e in reversed(self.audit_logger.entries)],
             "recent_audit_entries": [e.to_dict() for e in self.audit_logger.entries[-5:]],
         }

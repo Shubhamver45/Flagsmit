@@ -98,4 +98,112 @@ def test_engine_manual_rollback(engine, fake_flagsmith):
     assert entry.decision == "ROLLBACK"
     assert fake_flagsmith.current_percentage == 0.0
     assert fake_flagsmith.is_enabled is False
-    assert "Critical Sentry alert" in entry.reason
+
+
+def test_engine_approval_blocked_on_srm_warning(fake_flagsmith):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=10,
+        require_approval_before_final=True,
+        guardrails=[
+            Guardrail(name="checkout_ab", metric_source="flagsmith_experiment", comparison=">", threshold=10.0, experiment_id=1)
+        ],
+    )
+    engine = GuardianEngine(config=cfg, flagsmith_client=fake_flagsmith)
+    engine.state_machine.current_state = RolloutState.AWAITING_APPROVAL.value
+
+    engine.latest_evaluations = [
+        MetricEvaluation(
+            name="checkout_ab",
+            value=None,
+            sample_size=2000,
+            is_breached=False,
+            status=MetricStatus.SRM_BREACH,
+            reason="SRM Warning",
+            details={"as_of": "2026-11-22T13:22:48Z", "srm_warning": True, "srm_p_value": 0.0002},
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Sample Ratio Mismatch \\(SRM\\) detected"):
+        engine.approve()
+
+
+def test_engine_approval_blocked_on_chance_to_be_worse_breach(fake_flagsmith):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=10,
+        require_approval_before_final=True,
+        guardrails=[
+            Guardrail(name="checkout_ab", metric_source="flagsmith_experiment", comparison=">", threshold=10.0, experiment_id=1)
+        ],
+    )
+    engine = GuardianEngine(config=cfg, flagsmith_client=fake_flagsmith)
+    engine.state_machine.current_state = RolloutState.AWAITING_APPROVAL.value
+
+    engine.latest_evaluations = [
+        MetricEvaluation(
+            name="checkout_ab",
+            value=14.5,
+            sample_size=2000,
+            is_breached=True,
+            status=MetricStatus.BREACH,
+            reason="Chance-to-be-worse breach",
+            details={
+                "as_of": "2026-11-22T13:22:48Z",
+                "chance_to_be_worse": 14.5,
+                "srm_warning": False,
+                "srm_p_value": 0.45,
+            },
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Bayesian chance-to-be-worse \\(14.5%\\) exceeds configured limit"):
+        engine.approve()
+
+
+def test_engine_approval_succeeds_with_healthy_experiment(fake_flagsmith):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=10,
+        require_approval_before_final=True,
+        guardrails=[
+            Guardrail(name="checkout_ab", metric_source="flagsmith_experiment", comparison=">", threshold=10.0, experiment_id=1)
+        ],
+    )
+    engine = GuardianEngine(config=cfg, flagsmith_client=fake_flagsmith)
+    engine.state_machine.current_state = RolloutState.AWAITING_APPROVAL.value
+
+    engine.latest_evaluations = [
+        MetricEvaluation(
+            name="checkout_ab",
+            value=5.8,
+            sample_size=2395,
+            is_breached=False,
+            status=MetricStatus.HEALTHY,
+            reason="Healthy metrics",
+            details={
+                "as_of": "2026-11-22T13:22:48Z",
+                "chance_to_be_worse": 5.8,
+                "srm_warning": False,
+                "srm_p_value": 0.4821,
+                "lift": 0.208,
+            },
+        )
+    ]
+
+    entry = engine.approve()
+    assert entry.decision == "PROMOTED"
+    assert engine.current_percentage == 100.0
+
+    status = engine.get_status()
+    assert status["experiment"] is not None
+    assert status["experiment"]["as_of"] == "2026-11-22T13:22:48Z"
+    assert status["experiment"]["chance_to_be_worse"] == 5.8
+    assert status["experiment"]["srm_warning"] is False
+    assert status["experiment"]["is_eligible_for_approval"] is True

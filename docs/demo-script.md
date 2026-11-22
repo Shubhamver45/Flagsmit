@@ -26,7 +26,7 @@ Open the following browser tabs (or split-screen layout):
 
 ---
 
-### Act 2: Healthy Rollout Advancing & Human Approval (0:45 – 1:35)
+### Act 2: Healthy Rollout Advancing, Experiment Gating & Human Approval (0:45 – 1:35)
 **Visual**: Screen showing Guardian Dashboard (`:8080`) side-by-side with Flagsmith (`:8000`).
 
 > *"Here is Guardian in action with our demo e-commerce application gated by the Flagsmith feature flag `new_checkout`.*  
@@ -37,9 +37,13 @@ Open the following browser tabs (or split-screen layout):
 > 
 > *Guardian advances from 1% to 5%, and then to 25%. In Flagsmith, you can see the multivariate allocation updating live through the Admin API.*  
 > 
-> *Notice what happens before 100%: Guardian enters **AWAITING_APPROVAL**. Rather than blindly shipping to everyone, Guardian holds safely and asks for human sign-off.*  
+> *Notice what happens before 100%: Guardian enters **AWAITING_APPROVAL**. Rather than blindly shipping to everyone, Guardian reads the live experiment results from Flagsmith Experimentation for the checkout A/B test.*  
 > 
-> *An operator can approve directly with one click on the dashboard, or with a single CLI command:*  
+> *On the status page, you can see the dedicated Flagsmith Experimentation card: the Bayesian Chance-to-be-Worse (5.8%), the Sample Ratio Mismatch (SRM) status (p-value: 0.4821), relative lift (+20.8%), and the exact "as of" calculation timestamp from the warehouse.*  
+> 
+> *Crucially: if an SRM warning had fired, or if chance-to-be-worse exceeded our 10.0% threshold, the Approve action would be strictly blocked with a clear reason.*  
+> 
+> *Because our experiment is healthy, the operator can safely approve directly with one click on the dashboard, or with a single CLI command:*  
 > ```bash
 > python3 -m guardian.cli approve --by "release-lead" --reason "Metrics healthy"
 > ```  
@@ -75,7 +79,7 @@ Open the following browser tabs (or split-screen layout):
 > * First, Guardian drives Flagsmith's **Master Admin API** for programmatic multivariate percentage allocation and instant 0.0% rollback toggles.*  
 > * Second, the demo application evaluates user identities using the official **Flagsmith Client SDK**.*  
 > * Third, Guardian respects Flagsmith's internal architecture, cleanly decoupling operational rollout flags from experiment segment overrides to avoid system locks.*  
-> * And behind the scenes, Guardian also includes an experiment results evaluator capable of monitoring Flagsmith's Bayesian metrics (`chance_to_win`) and Sample Ratio Mismatch (SRM) alerts.*  
+> * And fourth, Guardian integrates directly with **Flagsmith Experimentation**, reading live results (chance-to-be-worse, SRM warnings, and "as of" times) to gate human promotion.*  
 > 
 > *Best of all, everything runs locally with one command: `./scripts/demo.sh`.*  
 > 

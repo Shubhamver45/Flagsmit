@@ -223,3 +223,32 @@ def test_demo_app_auth_when_token_configured(monkeypatch):
         # Query parameter (?token=...) is rejected (removed for security) -> 401
         res_query = client.post("/reset-metrics?token=demo-secret")
         assert res_query.status_code == 401
+
+
+def test_api_approve_blocked_when_experiment_unhealthy(mock_engine):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    from guardian.config import Guardrail
+
+    mock_engine.config.guardrails.append(
+        Guardrail(name="checkout_ab", metric_source="flagsmith_experiment", comparison=">", threshold=10.0, experiment_id=1)
+    )
+    mock_engine.state_machine.current_state = RolloutState.AWAITING_APPROVAL.value
+
+    # Set SRM warning in latest evaluations
+    mock_engine.latest_evaluations = [
+        MetricEvaluation(
+            name="checkout_ab",
+            value=None,
+            sample_size=1000,
+            is_breached=False,
+            status=MetricStatus.SRM_BREACH,
+            reason="SRM Warning",
+            details={"as_of": "2026-11-22T13:22:48Z", "srm_warning": True, "srm_p_value": 0.0001},
+        )
+    ]
+
+    app = create_app(mock_engine)
+    client = TestClient(app)
+    res = client.post("/approve", json={"approved_by": "alice", "reason": "Testing block"})
+    assert res.status_code == 400
+    assert "Sample Ratio Mismatch" in res.json()["detail"]

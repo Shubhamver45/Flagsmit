@@ -342,6 +342,37 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Flagsmith Experimentation Card -->
+    <div id="experiment-card" class="card" style="margin-bottom: 24px; display: none;">
+      <div class="card-title">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span>🧪 Flagsmith Experimentation (Checkout A/B)</span>
+          <span id="exp-status-pill" class="status-pill pill-healthy">HEALTHY</span>
+        </div>
+        <span id="exp-as-of" class="mono" style="font-size: 11px; color: var(--text-muted);">As of: --</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 12px;">
+        <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--card-border);">
+          <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Chance to be Worse</div>
+          <div id="exp-chance-worse" class="mono" style="font-size: 22px; font-weight: 700; color: #34d399; margin: 4px 0;">--</div>
+          <div style="font-size: 11px; color: var(--text-muted);">Threshold: &lt; 10.0%</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--card-border);">
+          <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Sample Ratio Mismatch (SRM)</div>
+          <div id="exp-srm" class="mono" style="font-size: 22px; font-weight: 700; color: #34d399; margin: 4px 0;">No SRM</div>
+          <div id="exp-srm-p" class="mono" style="font-size: 11px; color: var(--text-muted);">p-value: -- (limit: 0.001)</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--card-border);">
+          <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Relative Conversion Lift</div>
+          <div id="exp-lift" class="mono" style="font-size: 22px; font-weight: 700; color: #818cf8; margin: 4px 0;">--</div>
+          <div id="exp-samples" class="mono" style="font-size: 11px; color: var(--text-muted);">Total samples: --</div>
+        </div>
+      </div>
+      <div id="exp-gate-note" style="margin-top: 14px; font-size: 12px; padding: 10px 14px; border-radius: 6px; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #34d399;">
+        ✅ Experiment gate healthy: Bayesian confidence and traffic balance clear for promotion.
+      </div>
+    </div>
+
     <!-- Guardrails -->
     <div class="card" style="margin-bottom: 24px;">
       <div class="card-title">Guardrail Metrics</div>
@@ -405,8 +436,15 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
       // Banner & Approve button
       const isAwaiting = data.state === 'AWAITING_APPROVAL';
+      const isEligible = data.experiment ? (data.experiment.is_eligible_for_approval !== false) : true;
       document.getElementById('awaiting-banner').style.display = isAwaiting ? 'flex' : 'none';
-      document.getElementById('btn-approve-action').disabled = !isAwaiting;
+      const approveBtn = document.getElementById('btn-approve-action');
+      approveBtn.disabled = !isAwaiting || !isEligible;
+      if (isAwaiting && !isEligible) {
+        approveBtn.title = data.experiment?.block_reason || 'Approval blocked by experiment guardrail';
+      } else {
+        approveBtn.title = '';
+      }
 
       // Color code state badge
       const stateEl = document.getElementById('state-display');
@@ -414,6 +452,57 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       else if (data.state === 'ROLLED_BACK') stateEl.style.color = '#f87171';
       else if (data.state === 'AWAITING_APPROVAL') stateEl.style.color = '#fbbf24';
       else stateEl.style.color = '#f9fafb';
+
+      // Experiment Card
+      if (data.experiment) {
+        document.getElementById('experiment-card').style.display = 'block';
+        const exp = data.experiment;
+        const asOfStr = exp.as_of ? new Date(exp.as_of).toUTCString() : (exp.as_of || '--');
+        document.getElementById('exp-as-of').innerText = 'As of: ' + asOfStr;
+
+        const cwVal = exp.chance_to_be_worse !== null && exp.chance_to_be_worse !== undefined ? (typeof exp.chance_to_be_worse === 'number' ? exp.chance_to_be_worse.toFixed(1) + '%' : exp.chance_to_be_worse) : '--';
+        const cwEl = document.getElementById('exp-chance-worse');
+        cwEl.innerText = cwVal;
+        if (exp.chance_to_be_worse !== null && exp.chance_to_be_worse > 10.0) {
+          cwEl.style.color = '#f87171';
+        } else {
+          cwEl.style.color = '#34d399';
+        }
+
+        const srmEl = document.getElementById('exp-srm');
+        const srmPEl = document.getElementById('exp-srm-p');
+        if (exp.srm_warning) {
+          srmEl.innerText = 'SRM DETECTED!';
+          srmEl.style.color = '#f87171';
+          srmPEl.innerText = `p-value: ${exp.srm_p_value !== null && exp.srm_p_value !== undefined ? exp.srm_p_value.toFixed(6) : '--'} (< 0.001)`;
+        } else {
+          srmEl.innerText = 'No SRM';
+          srmEl.style.color = '#34d399';
+          srmPEl.innerText = `p-value: ${exp.srm_p_value !== null && exp.srm_p_value !== undefined ? exp.srm_p_value.toFixed(4) : '--'} (limit: 0.001)`;
+        }
+
+        const liftVal = exp.lift !== null && exp.lift !== undefined ? ((exp.lift >= 0 ? '+' : '') + (exp.lift * 100).toFixed(1) + '%') : '--';
+        document.getElementById('exp-lift').innerText = liftVal;
+        document.getElementById('exp-samples').innerText = `Total samples: ${(exp.total_samples || 0).toLocaleString()}`;
+
+        const pillEl = document.getElementById('exp-status-pill');
+        const gateNoteEl = document.getElementById('exp-gate-note');
+        if (!exp.is_eligible_for_approval && exp.block_reason) {
+          pillEl.className = 'status-pill pill-breached';
+          pillEl.innerText = 'GATE BLOCKED';
+          gateNoteEl.style.background = 'rgba(239, 68, 68, 0.1)';
+          gateNoteEl.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+          gateNoteEl.style.color = '#f87171';
+          gateNoteEl.innerHTML = `⚠️ <strong>${exp.block_reason}</strong>`;
+        } else {
+          pillEl.className = 'status-pill pill-healthy';
+          pillEl.innerText = 'HEALTHY';
+          gateNoteEl.style.background = 'rgba(16, 185, 129, 0.1)';
+          gateNoteEl.style.borderColor = 'rgba(16, 185, 129, 0.2)';
+          gateNoteEl.style.color = '#34d399';
+          gateNoteEl.innerHTML = '✅ Experiment gate healthy: Bayesian confidence and traffic balance clear for promotion.';
+        }
+      }
 
       // Stepper
       renderStepper(data);
