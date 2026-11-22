@@ -13,6 +13,21 @@ app = Flask(__name__)
 FLAGSMITH_ENV_KEY = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "N6LnMxtye9LM89yM7qwv8t")
 FLAGSMITH_API_URL = os.environ.get("FLAGSMITH_API_URL", "http://flagsmith:8000/api/v1/")
 BUG_IN_NEW_CHECKOUT = os.environ.get("BUG_IN_NEW_CHECKOUT", "1") == "1"
+DEMO_API_TOKEN = os.environ.get("DEMO_API_TOKEN", "")
+
+def check_demo_auth() -> bool:
+    """Validate API token if DEMO_API_TOKEN is configured."""
+    if not DEMO_API_TOKEN:
+        return True
+    auth = request.headers.get("Authorization", "")
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    elif request.headers.get("X-API-Token"):
+        token = request.headers.get("X-API-Token")
+    elif request.args.get("token"):
+        token = request.args.get("token")
+    return token == DEMO_API_TOKEN
 
 logger.info(f"Initializing Flagsmith client with API {FLAGSMITH_API_URL}")
 flagsmith_client = Flagsmith(
@@ -82,6 +97,8 @@ def metrics():
 
 @app.route("/toggle-bug", methods=["POST", "GET"])
 def toggle_bug():
+    if not check_demo_auth():
+        return jsonify({"error": "Unauthorized: Invalid or missing API token"}), 401
     global BUG_IN_NEW_CHECKOUT
     val = request.args.get("enabled")
     if val is not None:
@@ -93,6 +110,8 @@ def toggle_bug():
 
 @app.route("/reset-metrics", methods=["POST", "GET"])
 def reset_metrics():
+    if not check_demo_auth():
+        return jsonify({"error": "Unauthorized: Invalid or missing API token"}), 401
     CHECKOUT_REQUESTS_TOTAL.clear()
     CHECKOUT_ERRORS_TOTAL.clear()
     for v in ("old_flow", "new_flow"):

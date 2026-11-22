@@ -128,3 +128,98 @@ def test_cli_call_api_success():
 
         res = cli.call_api("/approve", base_url="http://localhost:8080", data={"reason": "test"})
         assert res["status"] == "success"
+
+
+def test_write_endpoints_require_token_when_configured(mock_engine):
+    app = create_app(mock_engine, api_token="secret-token-123")
+    client = TestClient(app)
+
+    # 1. Read-only endpoints do NOT require auth
+    assert client.get("/health").status_code == 200
+    assert client.get("/status").status_code == 200
+    assert client.get("/").status_code == 200
+
+    # 2. Write endpoints without token -> 401 Unauthorized
+    res_approve = client.post("/approve", json={"approved_by": "alice"})
+    assert res_approve.status_code == 401
+    assert "Unauthorized" in res_approve.json()["detail"]
+
+    res_rollback = client.post("/rollback", json={"reason": "Manual"})
+    assert res_rollback.status_code == 401
+    assert "Unauthorized" in res_rollback.json()["detail"]
+
+    res_reset = client.post("/reset")
+    assert res_reset.status_code == 401
+    assert "Unauthorized" in res_reset.json()["detail"]
+
+    res_tick = client.post("/tick")
+    assert res_tick.status_code == 401
+    assert "Unauthorized" in res_tick.json()["detail"]
+
+    # 3. Write endpoints with INVALID token -> 401 Unauthorized
+    res_bad_bearer = client.post("/tick", headers={"Authorization": "Bearer wrong-token"})
+    assert res_bad_bearer.status_code == 401
+
+    res_bad_header = client.post("/tick", headers={"X-API-Token": "wrong-token"})
+    assert res_bad_header.status_code == 401
+
+    # 4. Write endpoints with VALID Bearer token -> success
+    res_valid_bearer = client.post("/tick", headers={"Authorization": "Bearer secret-token-123"})
+    assert res_valid_bearer.status_code == 200
+    assert res_valid_bearer.json()["status"] == "ok"
+
+    # 5. Write endpoints with VALID X-API-Token header -> success
+    res_valid_header = client.post("/reset", headers={"X-API-Token": "secret-token-123"})
+    assert res_valid_header.status_code == 200
+    assert res_valid_header.json()["status"] == "reset"
+
+    # 6. Write endpoints with VALID query parameter (?token=...) -> success
+    res_valid_query = client.post("/tick?token=secret-token-123")
+    assert res_valid_query.status_code == 200
+
+
+def test_cli_call_api_with_token():
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"status": "success", "message": "OK"}'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        res = cli.call_api("/approve", base_url="http://localhost:8080", data={"reason": "test"}, token="my-cli-token")
+        assert res["status"] == "success"
+
+        # Verify Authorization header was sent in Request
+        req_arg = mock_urlopen.call_args[0][0]
+        assert req_arg.headers.get("Authorization") == "Bearer my-cli-token"
+
+
+def test_demo_app_auth_when_token_configured(monkeypatch):
+    import sys
+    # Provide mocks for optional demo app container dependencies
+    if "prometheus_client" not in sys.modules:
+        sys.modules["prometheus_client"] = MagicMock()
+    if "flagsmith" not in sys.modules:
+        sys.modules["flagsmith"] = MagicMock()
+
+    import demo.app as demo_app
+
+    # When DEMO_API_TOKEN is set
+    monkeypatch.setattr(demo_app, "DEMO_API_TOKEN", "demo-secret")
+    with demo_app.app.test_client() as client:
+        # Unauthenticated calls fail with 401
+        res = client.post("/toggle-bug?enabled=1")
+        assert res.status_code == 401
+        assert "Unauthorized" in res.get_json()["error"]
+
+        res_reset = client.post("/reset-metrics")
+        assert res_reset.status_code == 401
+
+        # With Bearer token -> 200
+        res_auth = client.post("/toggle-bug?enabled=1", headers={"Authorization": "Bearer demo-secret"})
+        assert res_auth.status_code == 200
+        assert res_auth.get_json()["bug_enabled"] is True
+
+        # With query param token -> 200
+        res_query = client.post("/reset-metrics?token=demo-secret")
+        assert res_query.status_code == 200
+        assert res_query.get_json()["status"] == "metrics_cleared"

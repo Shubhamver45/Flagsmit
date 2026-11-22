@@ -4,9 +4,11 @@ Provides REST endpoints for status inspection, operator actions, and human appro
 """
 
 from __future__ import annotations
+import os
 from typing import Any, Dict, Optional
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, Security, Depends, status
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from guardian.engine import GuardianEngine
@@ -23,12 +25,43 @@ class RollbackRequest(BaseModel):
     reason: Optional[str] = "Operator initiated manual rollback"
 
 
-def create_app(engine: GuardianEngine) -> FastAPI:
+def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastAPI:
     app = FastAPI(
         title="Guardian Service",
         description="Guarded Rollout Engine for Flagsmith",
         version="1.0.0",
     )
+
+    bearer_scheme = HTTPBearer(auto_error=False)
+
+    async def verify_write_token(
+        request: Request,
+        auth: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+    ) -> bool:
+        expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
+        if not expected_token:
+            # Open mode: no authentication configured (local dev/demo)
+            return True
+
+        # 1. Authorization: Bearer <token>
+        if auth and auth.credentials == expected_token:
+            return True
+
+        # 2. X-API-Token / X-Guardian-Token header
+        header_token = request.headers.get("X-API-Token") or request.headers.get("X-Guardian-Token")
+        if header_token and header_token == expected_token:
+            return True
+
+        # 3. Query parameter: ?token=<token>
+        query_token = request.query_params.get("token")
+        if query_token and query_token == expected_token:
+            return True
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Invalid or missing API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -42,7 +75,7 @@ def create_app(engine: GuardianEngine) -> FastAPI:
     def get_status() -> Dict[str, Any]:
         return engine.get_status()
 
-    @app.post("/approve")
+    @app.post("/approve", dependencies=[Depends(verify_write_token)])
     def approve(payload: Optional[ApproveRequest] = None) -> Dict[str, Any]:
         current_state = engine.current_state
         if current_state != RolloutState.AWAITING_APPROVAL.value:
@@ -63,7 +96,7 @@ def create_app(engine: GuardianEngine) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    @app.post("/rollback")
+    @app.post("/rollback", dependencies=[Depends(verify_write_token)])
     def manual_rollback(payload: Optional[RollbackRequest] = None) -> Dict[str, Any]:
         reason = payload.reason if payload else "Manual operator rollback"
         entry = engine.manual_rollback(reason=reason)
@@ -75,7 +108,7 @@ def create_app(engine: GuardianEngine) -> FastAPI:
             "audit_entry": entry.to_dict(),
         }
 
-    @app.post("/reset")
+    @app.post("/reset", dependencies=[Depends(verify_write_token)])
     def reset_rollout() -> Dict[str, Any]:
         entry = engine.reset()
         return {
@@ -86,7 +119,7 @@ def create_app(engine: GuardianEngine) -> FastAPI:
             "audit_entry": entry.to_dict(),
         }
 
-    @app.post("/tick")
+    @app.post("/tick", dependencies=[Depends(verify_write_token)])
     def trigger_tick() -> Dict[str, Any]:
         entry = engine.tick()
         return {

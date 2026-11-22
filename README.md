@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
 [![Flagsmith](https://img.shields.io/badge/Flagsmith-Self--Hosted-purple.svg)](https://flagsmith.com/)
-[![Tests](https://img.shields.io/badge/Tests-28%20Passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-31%20Passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/YOUR_USERNAME/guardian/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
@@ -330,6 +330,23 @@ This project was built as a hackathon submission and there are things that are r
 | **Multi-flag support** | Guardian currently manages a single flag per process (from `config.yaml`). Running multiple Guardian instances — one per flag — is the workaround. |
 | **Git history** | Early development commits contain local-only Flagsmith dev credentials (a self-hosted instance with no network exposure). These are harmless for a local demo setup but would need to be rotated and history-rewritten before connecting a real production Flagsmith deployment. |
 | **Docker image** | The root `Dockerfile` is provided for Guardian but is **not tested in the demo** — the demo runs Guardian directly with `python -m guardian.main` for simplicity. |
+
+---
+
+## Security & Demo Endpoints Notice
+
+### API Token Protection for Write Endpoints
+Guardian's write endpoints (`POST /approve`, `POST /rollback`, `POST /reset`, `POST /tick`) support token-based authentication via the `GUARDIAN_API_TOKEN` environment variable:
+* **Production**: Set `GUARDIAN_API_TOKEN=<token>` in your environment. All write requests must include either `Authorization: Bearer <token>`, `X-API-Token: <token>`, or `?token=<token>`. Unauthenticated or invalid requests receive `401 Unauthorized`.
+* **Local Development / Demo**: If `GUARDIAN_API_TOKEN` is unset or empty, authentication is disabled so demo scripts can run without credential friction.
+* **CLI & Scripts**: Pass `--token <token>` to the `guardian` CLI or export `GUARDIAN_API_TOKEN` for `scripts/guardian-approve.sh`.
+
+### ⚠️ Demo Endpoints are for Demo Use Only
+Several endpoints across the project exist **exclusively for local evaluation and interactive rehearsals**:
+* **Guardian**: `POST /reset` and `POST /tick` allow test harnesses to manually step the state machine or reset a rollout to `PENDING`.
+* **Demo App**: `POST /toggle-bug` and `POST /reset-metrics` allow manual fault injection and Prometheus counter clearing.
+
+> **Caution**: In a production deployment, demo endpoints (`/reset`, `/tick`, `/toggle-bug`, `/reset-metrics`) **must never be exposed to public traffic or unauthenticated networks**. Restrict network access to Guardian's administrative port and always configure `GUARDIAN_API_TOKEN`.
 
 ---
 

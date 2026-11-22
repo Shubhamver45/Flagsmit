@@ -530,12 +530,34 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       }).join('');
     }
 
+    function getAuthHeaders() {
+      const headers = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('guardian_token');
+      if (token) {
+        headers['Authorization'] = 'Bearer ' + token;
+      }
+      return headers;
+    }
+
+    async function authenticatedFetch(url, options = {}) {
+      options.headers = Object.assign(getAuthHeaders(), options.headers || {});
+      let res = await fetch(url, options);
+      if (res.status === 401) {
+        const token = prompt('API token required for Guardian write actions. Enter token:');
+        if (token) {
+          localStorage.setItem('guardian_token', token.trim());
+          options.headers['Authorization'] = 'Bearer ' + token.trim();
+          res = await fetch(url, options);
+        }
+      }
+      return res;
+    }
+
     async function handleApprove() {
       if (!confirm('Approve final promotion to 100% rollout?')) return;
       try {
-        const res = await fetch('/approve', {
+        const res = await authenticatedFetch('/approve', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ approved_by: 'operator_ui', reason: 'Approved from Status Page' })
         });
         const data = await res.json();
@@ -550,13 +572,13 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       const reason = prompt('Enter rollback reason:', 'Manual rollback from Status Page');
       if (reason === null) return;
       try {
-        const res = await fetch('/rollback', {
+        const res = await authenticatedFetch('/rollback', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason })
         });
         const data = await res.json();
-        fetchStatus();
+        if (!res.ok) alert('Rollback failed: ' + (data.detail || JSON.stringify(data)));
+        else fetchStatus();
       } catch (err) {
         alert('Network error: ' + err);
       }
@@ -564,7 +586,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
     async function handleTick() {
       try {
-        await fetch('/tick', { method: 'POST' });
+        await authenticatedFetch('/tick', { method: 'POST' });
         fetchStatus();
       } catch (err) {
         console.error(err);
@@ -574,7 +596,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     async function handleReset() {
       if (!confirm('Reset rollout back to PENDING (0%) for a fresh demo run?')) return;
       try {
-        await fetch('/reset', { method: 'POST' });
+        await authenticatedFetch('/reset', { method: 'POST' });
         try { await fetch('http://localhost:5001/reset-metrics', { method: 'POST' }); } catch (e) {}
         fetchStatus();
       } catch (err) {
