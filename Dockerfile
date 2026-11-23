@@ -7,13 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt ./
+# Install Python dependencies and package
+COPY requirements.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy Guardian source
+# Copy Guardian source and configs
 COPY guardian/ ./guardian/
-COPY config.yaml ./
+COPY config.example.yaml ./
+COPY config*.yaml ./
+RUN pip install --no-cache-dir -e .
 
 # Expose Guardian API port
 EXPOSE 8080

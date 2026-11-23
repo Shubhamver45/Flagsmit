@@ -63,10 +63,12 @@ def build_engine(config_path: str = "config.yaml", demo_mode: bool = False, demo
 
     cfg = load_config(config_path)
 
-    # Allow env overrides for keys, webhooks, and demo mode
+    # Allow env overrides for keys, flag name, webhooks, and demo mode
     overrides: Dict[str, Any] = {}
     if env_key:
         overrides["environment_key"] = env_key
+    if os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME"):
+        overrides["flag_name"] = os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME")
     if os.environ.get("SLACK_WEBHOOK_URL"):
         overrides["slack_webhook_url"] = os.environ["SLACK_WEBHOOK_URL"]
     if os.environ.get("GENERIC_WEBHOOK_URL"):

@@ -201,6 +201,116 @@ Operators approve the final 100% promotion through either:
 
 ---
 
+## Use it with your own Flagsmith in 5 Minutes
+
+Guardian is designed to run against **any Flagsmith deployment** (Flagsmith Cloud or self-hosted) and any feature flag—not just our demo environment.
+
+```mermaid
+flowchart LR
+    A["1. guardian init<br/>(or 5 env vars)"] --> B["2. Configure Stages<br/>& Guardrails"]
+    B --> C["3. Run Guardian<br/>(Docker or Python)"]
+    C --> D["4. Monitor Live<br/>(:8080 or CLI)"]
+    D --> E["5. Approve & Promote<br/>(or Auto-Rollback)"]
+```
+
+### Quickstart Workflow
+
+#### Step 1: Run `guardian init` (or provide environment variables)
+Guardian provides an interactive setup wizard that verifies your Flagsmith credentials, discovers your environment and project, confirms your target flag exists, and generates a production-ready `config.yaml`:
+
+```bash
+# Run the interactive setup wizard
+python3 -m guardian.cli init
+
+# Or run non-interactively with arguments
+python3 -m guardian.cli init \
+  --flagsmith-url "https://edge.api.flagsmith.com/api/v1" \
+  --admin-api-key "your_flagsmith_master_admin_api_key" \
+  --environment-key "your_environment_client_key" \
+  --flag-name "my_production_feature" \
+  --prometheus-url "http://prometheus:9090" \
+  --stages "1, 5, 25, 100" \
+  --soak 30 \
+  --save-env \
+  --non-interactive
+```
+
+*(Alternatively, run Guardian without any config file by setting the documented environment variables below).*
+
+#### Step 2: Configure Your Rollout Stages & Guardrails
+Edit the generated `config.yaml` to specify your rollout stages, soak dwell times, and metric guardrails (see [Configuration Reference](#configuration-reference-configyaml) below).
+
+#### Step 3: Launch Guardian Daemon
+
+##### Option A: Run Pre-Built Docker Image from GHCR
+```bash
+docker run -d \
+  --name flagsmith-guardian \
+  -p 8080:8080 \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  --env-file .env \
+  ghcr.io/your-org/flagsmith-guardian:latest
+```
+
+##### Option B: Run via Python CLI
+```bash
+pip install -r requirements.txt
+python3 -m guardian.main --port 8080 --interval 5
+```
+
+##### Option C: Zero-Config Container (Pure Environment Variables)
+Guardian can run with **zero config files mounted**, using only environment variables:
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e FLAGSMITH_URL="https://edge.api.flagsmith.com/api/v1" \
+  -e FLAGSMITH_ADMIN_API_KEY="your_admin_api_key" \
+  -e FLAGSMITH_ENVIRONMENT_KEY="your_env_key" \
+  -e FLAG_NAME="my_production_feature" \
+  -e PROMETHEUS_URL="http://prometheus:9090" \
+  -e STAGES="1,5,25,100" \
+  -e SOAK_TIME_SECONDS="30" \
+  ghcr.io/your-org/flagsmith-guardian:latest
+```
+
+#### Step 4: Monitor Rollout Status
+View the live rollout progression, metric evaluations, and audit trail:
+* **Web UI Dashboard**: Navigate to `http://localhost:8080/`
+* **CLI Status Check**:
+  ```bash
+  python3 -m guardian.cli status
+  ```
+
+#### Step 5: Approve Final Promotion
+When stages complete their soak duration, Guardian holds at `AWAITING_APPROVAL`. Final promotion can be executed via:
+* Clicking **Approve 100%** on the web dashboard at `http://localhost:8080/`
+* Running the operator CLI command:
+  ```bash
+  python3 -m guardian.cli approve --by "sre-lead" --reason "Metrics verified healthy across all soak stages"
+  ```
+
+---
+
+## Environment Variable Reference
+
+All core settings can be passed or overridden via environment variables:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `FLAGSMITH_URL` | `http://localhost:8000/api/v1` | Flagsmith API endpoint (e.g. `https://edge.api.flagsmith.com/api/v1` for Cloud). |
+| `FLAGSMITH_ADMIN_API_KEY` | *(None)* | Flagsmith Master/Admin API key (used for remote percentage updates & experiments). |
+| `FLAGSMITH_ENVIRONMENT_KEY` | *(None)* | Client environment key (dynamically resolves environment ID and project ID). |
+| `FLAG_NAME` / `FLAGSMITH_FLAG_NAME` | *(None)* | Target feature flag to manage and guard. |
+| `PROMETHEUS_URL` | `http://localhost:9090` | Prometheus API base URL. |
+| `STAGES` | `1,5,25,100` | Comma-separated list of percentage stages. |
+| `SOAK_TIME_SECONDS` | `30` | Dwell duration (seconds) required at each stage before evaluation. |
+| `REQUIRE_APPROVAL` | `true` | Gate final promotion behind human signoff. |
+| `SLACK_WEBHOOK_URL` | *(None)* | Optional Slack incoming webhook URL for BlockKit alerts. |
+| `GENERIC_WEBHOOK_URL` | *(None)* | Optional HTTP webhook endpoint for JSON rollout events. |
+| `GUARDIAN_API_TOKEN` | *(None)* | Optional bearer token securing Guardian write endpoints (`/approve`, `/rollback`, `/reset`). |
+
+---
+
 ## Configuration Reference (`config.yaml`)
 
 Guardian is driven by a clean YAML configuration schema ([`config.yaml`](config.yaml)):
@@ -208,11 +318,10 @@ Guardian is driven by a clean YAML configuration schema ([`config.yaml`](config.
 ```yaml
 # Target feature flag managed in Flagsmith
 flag_name: "new_checkout"
-project_id: 1
-environment_id: 1
+# environment_key is loaded from .env or configured here
 environment_key: "N6LnMxtye9LM89yM7qwv8t"
 
-# Rollout percentage stages
+# Phased rollout percentages
 stages:
   - 1
   - 5
@@ -231,7 +340,7 @@ generic_webhook_url: "https://api.example.com/rollout-webhooks"
 
 # Guardrail metric triggers
 guardrails:
-  # Prometheus PromQL guardrail
+  # Example 1: Real-Time Prometheus PromQL Guardrail
   - name: "new_flow_error_rate"
     metric_source: "prometheus"
     comparison: ">"
@@ -239,9 +348,9 @@ guardrails:
     query: "((sum(rate(checkout_errors_total{variant='new_flow'}[15s])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[15s])) > 0 or vector(1))) * 100"
     sample_size_query: "sum(checkout_requests_total)"
     min_samples: 25
-    description: "Rollback to 0 if new flow error rate exceeds 5.0%"
+    description: "Rollback to 0% if new flow error rate exceeds 5.0%"
 
-  # Flagsmith Experimentation guardrail
+  # Example 2: Flagsmith Experimentation Statistical Guardrail
   - name: "checkout_ab_chance_to_be_worse"
     metric_source: "flagsmith_experiment"
     metric_id: 1
@@ -252,27 +361,61 @@ guardrails:
     description: "Hold rollout if Bayesian chance-to-be-worse > 10.0% or if SRM warning fires"
 ```
 
-### Configuration Fields
+### Deep Dive: Two Example Guardrails
+
+#### 1. Real-Time Prometheus PromQL Guardrail (`metric_source: "prometheus"`)
+Protects against operational regressions, crash loops, and degraded user experiences:
+* **Rate Window (`[15s]`)**: Uses a short sliding window (`15s`) configured to capture at least 3 scrapes (given a 2s Prometheus scrape interval). This produces fast, sharp breach signals (~3–7 seconds after a fault occurs) rather than diluted averages.
+* **Sample Size Protection (`min_samples: 25`)**: Evaluates `sample_size_query: "sum(checkout_requests_total)"` before triggering breaches. If total traffic is under 25 requests, Guardian holds the stage in `INSUFFICIENT_DATA` mode, preventing false alarms from low-traffic cold starts.
+* **Automated Action**: On breach (`error_rate > 5.0%`), Guardian executes an immediate rollback to 0%, dispatches a Slack alert, and logs numerical evidence to the audit log.
+
+#### 2. Flagsmith Experimentation Statistical Guardrail (`metric_source: "flagsmith_experiment"`)
+Connects directly to Flagsmith's Bayesian Experimentation engine to ensure business and statistical safety:
+* **Bayesian Chance-to-be-Worse (`threshold: 10.0%`)**: Reads the posterior distribution for the conversion metric. If the variation has > 10.0% chance of being worse than control, Guardian blocks final promotion.
+* **Sample Ratio Mismatch Safety Breaker (`action_on_srm: "HOLD"` / `"ROLLBACK"`)**: Flagsmith tests for traffic allocation anomalies using Chi-squared goodness-of-fit ($p < 0.001$). If an SRM is detected (e.g., variant assignment dropped or biased), Guardian blocks human approval with `BLOCKED: Flagsmith detected Sample Ratio Mismatch (SRM warning active, traffic corrupt)`.
+* **Data Sufficiency Check**: If Flagsmith reports data is still collecting (< 50 identities per arm or < 5 conversions), the approval gate strictly blocks premature promotion.
+
+---
+
+### Configuration Fields Reference
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `flag_name` | string | Name of the Flagsmith feature flag. |
-| `project_id` | integer | Flagsmith Project ID. |
-| `environment_id` | integer | Flagsmith Environment ID. |
-| `environment_key` | string | Flagsmith Client Environment Key. |
+| `project_id` | integer | (Optional) Flagsmith Project ID (resolved dynamically if omitted). |
+| `environment_id` | integer | (Optional) Flagsmith Environment ID (resolved dynamically if omitted). |
+| `environment_key` | string | Flagsmith Client Environment Key (used to auto-discover project & environment). |
 | `stages` | list[float] | Percentage allocations (must be strictly increasing, starting > 0, ending at 100). |
 | `soak_time_seconds` | integer | Dwell time per stage before evaluation allows advancement. |
 | `require_approval_before_final` | boolean | If `true`, pauses at `AWAITING_APPROVAL` before the final stage. |
 | `slack_webhook_url` | string | (Optional) Slack incoming webhook URL for BlockKit alerts. |
 | `generic_webhook_url` | string | (Optional) Generic HTTP endpoint for JSON audit payloads. |
+| `guardrails[].name` | string | Identifier for the guardrail. |
 | `guardrails[].metric_source` | string | `prometheus` or `flagsmith_experiment`. |
 | `guardrails[].comparison` | string | Comparison operator: `>`, `<`, `>=`, `<=`, `==`. |
 | `guardrails[].threshold` | float | Numerical threshold triggering a breach. |
 | `guardrails[].query` | string | PromQL query expression (for Prometheus sources). |
-| `guardrails[].sample_size_query`| string | PromQL query returning total request count for sample size validation. |
-| `guardrails[].min_samples` | integer | Minimum sample size required before triggering action (prevents premature false alarms). |
-| `guardrails[].experiment_id` | integer | Flagsmith Experiment ID (for Flagsmith Experiment sources). |
+| `guardrails[].sample_size_query`| string | PromQL query returning request count for sample size validation. |
+| `guardrails[].min_samples` | integer | Minimum sample size required before triggering action. |
+| `guardrails[].experiment_id` | integer | (Optional) Flagsmith Experiment ID (defaults to primary experiment). |
 | `guardrails[].metric_id` | integer | Flagsmith Metric ID to monitor for chance to be worse. |
+| `guardrails[].action_on_srm` | string | Action on Sample Ratio Mismatch: `HOLD` or `ROLLBACK` (default: `ROLLBACK`). |
+
+---
+
+## Docker & GitHub Container Registry (GHCR)
+
+Guardian is published as a multi-architecture Docker container to GHCR:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/your-org/flagsmith-guardian:latest
+```
+
+The repository includes a GitHub Actions workflow ([`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)) that:
+1. Runs automated tests on push and pull requests.
+2. Builds multi-platform container images (`linux/amd64` and `linux/arm64`).
+3. Publishes signed images to GitHub Container Registry on releases and merges to `main`.
 
 ---
 

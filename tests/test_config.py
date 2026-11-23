@@ -57,3 +57,22 @@ def test_load_config_from_dict():
     assert cfg.soak_time_seconds == 15
     assert len(cfg.guardrails) == 1
     assert cfg.guardrails[0].threshold == 250.0
+
+
+def test_load_config_from_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("FLAG_NAME", "custom_feature_flag")
+    monkeypatch.setenv("FLAGSMITH_ENVIRONMENT_KEY", "env_custom_123")
+    monkeypatch.setenv("STAGES", "2, 10, 50, 100")
+    monkeypatch.setenv("SOAK_TIME_SECONDS", "45")
+    monkeypatch.setenv("GUARDRAIL_QUERY", "sum(rate(errors[1m]))")
+    monkeypatch.setenv("GUARDRAIL_THRESHOLD", "3.0")
+
+    non_existent_file = tmp_path / "non_existent.yaml"
+    cfg = load_config(non_existent_file)
+    assert cfg.flag_name == "custom_feature_flag"
+    assert cfg.environment_key == "env_custom_123"
+    assert cfg.stages == [2, 10, 50, 100]
+    assert cfg.soak_time_seconds == 45
+    assert len(cfg.guardrails) == 1
+    assert cfg.guardrails[0].threshold == 3.0
+    assert cfg.guardrails[0].query == "sum(rate(errors[1m]))"

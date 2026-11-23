@@ -102,7 +102,51 @@ def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
     )
 
 
-def load_config(file_path: str | Path) -> RolloutConfig:
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return load_config_from_dict(data)
+def load_config(file_path: str | Path = "config.yaml") -> RolloutConfig:
+    import os
+    p = Path(file_path)
+    if p.exists():
+        with open(p, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return load_config_from_dict(data)
+
+    # Fallback to pure environment variables if config file is not present
+    flag_name = os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME")
+    if not flag_name:
+        raise FileNotFoundError(
+            f"Configuration file '{file_path}' not found, and no FLAG_NAME environment variable set. "
+            f"Run `guardian init` or provide a valid config file."
+        )
+
+    stages_str = os.environ.get("STAGES", "1,5,25,100")
+    stages = [int(s.strip()) for s in stages_str.split(",") if s.strip()]
+    soak = int(os.environ.get("SOAK_TIME_SECONDS", "30"))
+    approval = os.environ.get("REQUIRE_APPROVAL", "true").lower() in ("1", "true", "yes")
+    env_key = os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", "")
+
+    guardrails: List[Guardrail] = []
+    prom_query = os.environ.get("GUARDRAIL_QUERY")
+    if prom_query:
+        guardrails.append(
+            Guardrail(
+                name=f"{flag_name}_error_rate",
+                metric_source="prometheus",
+                comparison=os.environ.get("GUARDRAIL_COMPARISON", ">"),
+                threshold=float(os.environ.get("GUARDRAIL_THRESHOLD", "5.0")),
+                query=prom_query,
+                sample_size_query=os.environ.get("GUARDRAIL_SAMPLE_QUERY", "sum(checkout_requests_total)"),
+                min_samples=int(os.environ.get("GUARDRAIL_MIN_SAMPLES", "25")),
+                description="Prometheus guardrail configured via environment",
+            )
+        )
+
+    return RolloutConfig(
+        flag_name=flag_name,
+        stages=stages,
+        soak_time_seconds=soak,
+        require_approval_before_final=approval,
+        guardrails=guardrails,
+        environment_key=env_key,
+        slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL"),
+        generic_webhook_url=os.environ.get("GENERIC_WEBHOOK_URL"),
+    )
