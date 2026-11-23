@@ -126,7 +126,7 @@ def test_flagsmith_experiment_source_evaluation_and_srm():
     assert "Sample Ratio Mismatch" in ev_srm.reason
 
 
-def test_flagsmith_experiment_cooldown():
+def test_flagsmith_experiment_refresh_and_429_graceful():
     mock_session = MagicMock()
     mock_get_resp = MagicMock()
     mock_get_resp.json.return_value = {"results": {"payload": None}}
@@ -146,13 +146,20 @@ def test_flagsmith_experiment_cooldown():
 
     guardrail = Guardrail(name="test", metric_source="flagsmith_experiment", comparison=">", threshold=10, experiment_id=9)
 
-    # First evaluation calls POST refresh
+    # 1. notify_stage_started calls POST refresh once at stage start
+    source.notify_stage_started("STAGE_1", [guardrail])
+    assert mock_session.post.call_count == 1
+
+    # 2. evaluate() reads last computed results without triggering another POST refresh
     source.evaluate(guardrail)
     assert mock_session.post.call_count == 1
 
-    # Second immediate evaluation within 300s cooldown should NOT trigger POST refresh
-    source.evaluate(guardrail)
-    assert mock_session.post.call_count == 1
+    # 3. If next stage triggers refresh and receives HTTP 429 (5-min cooldown), handles gracefully
+    mock_post_resp.status_code = 429
+    source.notify_stage_started("STAGE_2", [guardrail])
+    assert mock_session.post.call_count == 2
+    ev = source.evaluate(guardrail)
+    assert ev.status == MetricStatus.INSUFFICIENT_DATA
 
 
 def test_composite_provider_with_engine(fake_flagsmith):

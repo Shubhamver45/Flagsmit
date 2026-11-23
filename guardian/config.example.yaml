@@ -27,7 +27,6 @@ guardrails:
 
   - name: "checkout_ab_chance_to_be_worse"
     metric_source: "flagsmith_experiment"
-    experiment_id: 1
     metric_id: 1
     comparison: ">"
     threshold: 10.0

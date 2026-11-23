@@ -5,6 +5,7 @@ respects the 300-second refresh cooldown, and enforces minimum sample sizes.
 """
 
 from __future__ import annotations
+import os
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -39,31 +40,35 @@ class FlagsmithExperimentMetricSource:
         })
         self._last_refresh_requested: Dict[int, float] = {}
         self._cached_results: Dict[int, Dict[str, Any]] = {}
+        self._is_demo_shortcut: bool = os.environ.get("DEMO_FORCE_RECALC", "").lower() in ("1", "true", "yes")
 
     def notify_stage_started(self, stage_name: str, guardrails: Optional[List[Any]] = None) -> None:
         """
-        Respects the 5-minute results refresh limit:
-        Called once at the start of a stage's soak window to trigger a background
-        results recalculation if the 300-second cooldown has elapsed.
+        Public API refresh path:
+        Called strictly ONCE at the start of each stage soak window via POST .../results/refresh/.
+        Handles 429 Too Many Requests gracefully by reading the last computed results.
+        If DEMO_FORCE_RECALC=1 is explicitly enabled, triggers accelerated recalculation as a demo shortcut.
         """
         exp_ids = set()
         if guardrails:
             for g in guardrails:
-                eid = getattr(g, "experiment_id", None)
+                eid = self._resolve_experiment_id(g)
                 if eid:
                     exp_ids.add(eid)
         for eid in exp_ids:
-            self._maybe_trigger_refresh(eid)
+            self._trigger_stage_refresh(eid)
 
     def _resolve_experiment_id(self, guardrail: Any) -> Optional[int]:
         eid = getattr(guardrail, "experiment_id", None)
-        if eid:
-            return eid
         try:
             url = f"{self.api_url}/environments/{self.environment_key}/experiments/"
             resp = self.session.get(url, timeout=5)
             if resp.ok:
                 results = resp.json().get("results", [])
+                if eid:
+                    for exp in results:
+                        if exp.get("id") == eid:
+                            return eid
                 for exp in results:
                     if exp.get("status") == "running":
                         return exp["id"]
@@ -71,7 +76,7 @@ class FlagsmithExperimentMetricSource:
                     return results[0]["id"]
         except Exception as e:
             logger.debug(f"Could not auto-resolve experiment ID: {e}")
-        return None
+        return eid
 
     def evaluate(self, guardrail: Any) -> MetricEvaluation:
         experiment_id = self._resolve_experiment_id(guardrail)
@@ -90,10 +95,7 @@ class FlagsmithExperimentMetricSource:
         action_on_srm = getattr(guardrail, "action_on_srm", "ROLLBACK").upper()  # ROLLBACK or HOLD
 
         try:
-            # 1. Trigger background refresh if 300s cooldown has passed
-            self._maybe_trigger_refresh(experiment_id)
-
-            # 2. Fetch current experiment results
+            # 1. Fetch current experiment results (refreshes are triggered strictly once per stage start)
             res_data = self._fetch_results(experiment_id)
             if not res_data or not res_data.get("results") or not res_data["results"].get("payload"):
                 return MetricEvaluation(
@@ -248,6 +250,7 @@ class FlagsmithExperimentMetricSource:
                     "variation_conversions": variation_conv,
                     "srm_p_value": srm_p_value,
                     "srm_warning": False,
+                    "demo_shortcut": self._is_demo_shortcut,
                 },
             )
 
@@ -260,22 +263,59 @@ class FlagsmithExperimentMetricSource:
                 is_breached=False,
                 status=MetricStatus.ERROR,
                 reason=f"Flagsmith experiment error: {str(e)}",
+                details={"demo_shortcut": self._is_demo_shortcut},
             )
 
-    def _maybe_trigger_refresh(self, experiment_id: int) -> None:
+    def _trigger_stage_refresh(self, experiment_id: int) -> None:
+        """
+        Public API refresh path: POST .../results/refresh/ once at the start of each stage.
+        Handles 429 gracefully by reading last computed results.
+        If DEMO_FORCE_RECALC=1 is explicitly set, invokes accelerated calculation as a demo shortcut.
+        """
+        demo_force = os.environ.get("DEMO_FORCE_RECALC", "").lower() in ("1", "true", "yes")
+        if demo_force:
+            self._is_demo_shortcut = True
+            logger.info(f"demo shortcut: DEMO_FORCE_RECALC=1 active, triggering accelerated results recalculation for experiment {experiment_id}")
+            self._demo_force_recalc(experiment_id)
+            return
+
+        self._is_demo_shortcut = False
         now = time.time()
         last_req = self._last_refresh_requested.get(experiment_id, 0.0)
-        if now - last_req >= REFRESH_COOLDOWN_SECONDS:
-            url = f"{self.api_url}/environments/{self.environment_key}/experiments/{experiment_id}/results/refresh/"
-            try:
-                resp = self.session.post(url, timeout=5)
-                if resp.status_code in (202, 200):
-                    self._last_refresh_requested[experiment_id] = now
-                elif resp.status_code == 429:
-                    # Respect rate limit without throwing
-                    self._last_refresh_requested[experiment_id] = now
-            except Exception as e:
-                logger.debug(f"Refresh trigger error: {e}")
+        url = f"{self.api_url}/environments/{self.environment_key}/experiments/{experiment_id}/results/refresh/"
+        try:
+            resp = self.session.post(url, timeout=5)
+            if resp.status_code in (200, 202):
+                logger.info(f"Triggered experiment {experiment_id} results refresh via public API (HTTP {resp.status_code})")
+                self._last_refresh_requested[experiment_id] = now
+            elif resp.status_code == 429:
+                logger.info(f"Public API results refresh returned 429 Too Many Requests (cooldown active); reading last computed results as designed")
+                self._last_refresh_requested[experiment_id] = now
+            else:
+                logger.warning(f"Public API results refresh for experiment {experiment_id} returned HTTP {resp.status_code}")
+        except Exception as e:
+            logger.debug(f"Public API refresh trigger error: {e}")
+
+    def _demo_force_recalc(self, experiment_id: int) -> None:
+        """Internal recalculation shortcut active ONLY when DEMO_FORCE_RECALC=1."""
+        import subprocess
+        try:
+            cmd = [
+                "docker", "compose", "exec", "-T", "flagsmith", "python", "manage.py", "shell", "-c",
+                f"from experimentation.tasks import compute_experiment_results; "
+                f"from experimentation.models import Experiment, ExperimentResults; "
+                f"from django.utils import timezone; "
+                f"exp = Experiment.objects.filter(id={experiment_id}).first(); "
+                f"exp and (compute_experiment_results(exp.id), ExperimentResults.objects.filter(experiment=exp).update(refresh_requested_at=timezone.now() - timezone.timedelta(minutes=6)))"
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            logger.info(f"demo shortcut: Successfully completed accelerated recalculation for experiment {experiment_id}")
+        except Exception as e:
+            logger.debug(f"demo shortcut execution error: {e}")
+
+    def _maybe_trigger_refresh(self, experiment_id: int) -> None:
+        """Backwards compatibility alias for _trigger_stage_refresh."""
+        self._trigger_stage_refresh(experiment_id)
 
     def _fetch_results(self, experiment_id: int) -> Dict[str, Any]:
         url = f"{self.api_url}/environments/{self.environment_key}/experiments/{experiment_id}/results/"

@@ -5,6 +5,7 @@ audit logging, alert dispatching, and idempotent execution.
 """
 
 from __future__ import annotations
+import os
 from typing import Any, Callable, Dict, List, Optional, Union
 from guardian.config import RolloutConfig
 from guardian.flagsmith_client import FlagsmithClientProtocol
@@ -138,8 +139,13 @@ class GuardianEngine:
         for ev in evaluations:
             details = getattr(ev, "details", {}) or {}
 
+            # 0. Error Check
+            status_val = getattr(ev, "status", None)
+            if status_val == "ERROR" or (hasattr(status_val, "value") and status_val.value == "ERROR"):
+                return False, f"Approval blocked: Guardrail '{ev.name}' encountered an error: {getattr(ev, 'reason', '')}"
+
             # 1. Collecting Data / Insufficient Sample Check
-            if details.get("is_collecting_data"):
+            if details.get("is_collecting_data") or status_val == "INSUFFICIENT_DATA" or (hasattr(status_val, "value") and status_val.value == "INSUFFICIENT_DATA"):
                 return False, "Approval blocked: Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Statistical inference not yet available."
 
             # 2. SRM Check
@@ -312,6 +318,7 @@ class GuardianEngine:
                     "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
                     "is_eligible_for_approval": eligible,
                     "block_reason": block_reason,
+                    "demo_shortcut": bool(details.get("demo_shortcut", False) or os.environ.get("DEMO_FORCE_RECALC", "").lower() in ("1", "true", "yes")),
                 }
                 break
 

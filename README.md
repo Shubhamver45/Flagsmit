@@ -35,8 +35,8 @@ flowchart TD
     subgraph Flagsmith Core Stack
         FS_UI["🖥️ Flagsmith UI (:8000)"]
         FS_API["⚡ Flagsmith Admin REST API (:8000)"]
-        FS_DB[("🗄️ PostgreSQL (:5432)")]
-        ClickHouse[("📊 ClickHouse Warehouse (:8123)")]
+        FS_DB[("🗄️ PostgreSQL Database & Warehouse (:5432)")]
+        FS_TP["⚙️ Flagsmith Task Processor (:8001)"]
     end
 
     subgraph Target Application
@@ -60,10 +60,10 @@ flowchart TD
 
     Users -->|Requests| App
     Simulator -->|Traffic Stream| App
-    App -->|Evaluates Flag: new_checkout| FS_API
+    App -->|Evaluates Flags & Tracks Events| FS_API
     App -->|Exports Metrics| Prometheus
     FS_API --- FS_DB
-    FS_API --- ClickHouse
+    FS_TP --- FS_DB
 
     Metrics -->|1. PromQL Query| Prometheus
     Metrics -->|2. SRM & Chance-to-Win| FS_API
@@ -114,6 +114,25 @@ Guardian was designed from the ground up to integrate with open-source, self-hos
    * **Live Telemetry & Source Attribution**: Rendered in real-time on Guardian's status page with the exact text: `results computed by Flagsmith from events sent by the demo app, as of <time>`.
    * **Cooldown Protection**: Flagsmith rate-limits results refresh to 300 seconds (`HTTP 429: Expected available in 300 seconds`). Guardian requests a refresh once at the start of each stage's soak window while respecting the 300-second cooldown.
 
+### How `checkout_experiment` Gates the `new_checkout` Rollout
+
+Guardian links two separate feature flags to combine operational safety with statistical confidence:
+1. **`new_checkout`** (Operational Rollout Flag): Controls the progressive percentage rollout (1% ➔ 5% ➔ 25% ➔ 100%) of the new checkout implementation.
+2. **`checkout_experiment`** (Multivariate A/B Experiment Flag): Measures user conversion impact (`checkout_completed` events) between `control` and `variation` arms using Flagsmith's native event analytics.
+
+Before Guardian permits promotion to 100% at the `AWAITING_APPROVAL` gate, it queries Flagsmith's experiment results for `checkout_experiment`. The promotion approval is strictly blocked if:
+* **Flagsmith is still collecting data** (fewer than 50 identities per arm or fewer than 5 conversions).
+* **Sample Ratio Mismatch (SRM) occurs** ($p < 0.001$), detecting corrupted variant traffic assignment (e.g. dropped exposure events on one variant).
+* **Bayesian `chance_to_be_worse`** exceeds the configured guardrail limit.
+
+Only when `checkout_experiment` demonstrates statistically valid positive or non-inferior conversion performance with a healthy SRM p-value is the operator approval gate unlocked.
+
+### Experiment Recalculation & `DEMO_FORCE_RECALC=1`
+
+In production, Flagsmith's public API enforces a 300-second (5-minute) cooldown on background experiment results recalculation (`HTTP 429 Too Many Requests`). Guardian's normal operational path uses strictly the public API: `POST /api/v1/environments/{key}/experiments/{id}/results/refresh/` once at the start of each stage's soak window, handling 429 responses gracefully by reading the last computed results.
+
+For fast automated demonstration runs (< 3 minutes) where soak times are accelerated (`DEMO_SOAK_SECONDS=3`), `./scripts/demo.sh` sets `DEMO_FORCE_RECALC=1`. This demo shortcut triggers immediate recalculation via Flagsmith's task processor and is explicitly labeled as `(demo shortcut)` in log output and on the live status page.
+
 ---
 
 ## Quickstart Guide
@@ -128,12 +147,14 @@ Guardian was designed from the ground up to integrate with open-source, self-hos
 ./scripts/demo.sh
 ```
 
+> **Note on Simulated Data**: In the demo checkout app (`demo/app.py`), conversion rates (~65% for control, ~95% for variation) and error injection rates (~30% when `BUG_IN_NEW_CHECKOUT=1`) are **simulated** in software to reliably demonstrate positive Bayesian lift, SRM detection, and automated rollback during rehearsals without requiring production traffic.
+
 This single command:
-1. Starts the self-hosted Flagsmith stack (Flagsmith API, PostgreSQL, ClickHouse Warehouse).
+1. Starts the self-hosted Flagsmith stack (Flagsmith API, PostgreSQL, Task Processor).
 2. Starts Prometheus on `:9090` and the Flask Demo Checkout App on `:5001`.
 3. Waits for all health checks to report ready.
 4. Launches the **Guardian daemon** on `http://localhost:8080/`.
-5. Starts the **traffic simulator**, streaming requests from 200 distinct user identities.
+5. Starts the **traffic simulator**, streaming requests from distinct user identities.
 
 ---
 
@@ -272,11 +293,12 @@ python3 -m pytest -v tests/
 ```text
 .
 ├── config.yaml                     # Active rollout configuration
-├── docker-compose.yml              # Flagsmith, ClickHouse, Postgres, Prometheus, Demo App
+├── docker-compose.yml              # Flagsmith, Postgres, Task Processor, Prometheus, Demo App
 ├── docs/
+│   ├── demo-script.md              # 3-minute video presentation storyboard & script
 │   └── spike.md                    # Feasibility spike & verified Flagsmith API behaviors
 ├── demo/
-│   ├── app.py                      # Flask checkout application (new_checkout flag gated)
+│   ├── app.py                      # Flask checkout application (Flagsmith SDK & event tracking)
 │   ├── simulator.py                # Multi-identity continuous traffic generator
 │   ├── Dockerfile                  # Container build for demo app
 │   └── prometheus.yml              # Prometheus scraping configuration
@@ -305,14 +327,14 @@ python3 -m pytest -v tests/
 │   ├── setup_flagsmith.py          # Auto-provisions Org, Project, Env & Warehouse
 │   ├── guardian-approve.sh         # Convenience CLI approval script
 │   └── test_live_metrics.py        # Integration test against live local stack
-└── tests/                          # 27 comprehensive pytest unit tests
+└── tests/                          # 38 comprehensive pytest unit tests
 ```
 
 ---
 
 ## Hackathon Ground Rules Adherence
 
-* **Self-Hosted Open Source Flagsmith**: Fully integrated with self-hosted Flagsmith on ClickHouse and Postgres.
+* **Self-Hosted Open Source Flagsmith**: Fully integrated with self-hosted Flagsmith running on PostgreSQL with the official background task processor and native experimentation analytics warehouse (`USE_POSTGRES_FOR_ANALYTICS=true`). ClickHouse was removed from `docker-compose.yml` because self-hosted Flagsmith stores and computes SDK experimentation events directly in PostgreSQL.
 * **No API Guesswork**: Every single Flagsmith endpoint, query parameter, and payload structure was empirically tested and documented in [`docs/spike.md`](docs/spike.md).
 * **Python 3.12, FastAPI, pytest**: Clean, modular, well-typed code with 100% reproducible tests.
 * **Decoupled Experiment & Rollout Architecture**: Resilient against Flagsmith's experiment system segment lock.
@@ -327,8 +349,10 @@ This project was built as a hackathon submission and there are things that are r
 
 | Area | Status |
 |------|--------|
-| **Flagsmith experiment results / Bayesian metrics** | Fully implemented in `guardian/metrics/flagsmith_exp.py` and unit-tested (tests for `chance_to_win`, SRM detection, sample size gating). **Not active** in the demo `config.yaml` guardrails — demo uses Prometheus error-rate only, because ClickHouse experimentation requires a configured Flagsmith paid plan or self-hosted ClickHouse with the experiment events pipeline running. |
-| **SRM and chance_to_be_worse guardrails** | Code is there, unit tests pass, but the demo does **not** trigger these paths end-to-end. The demo rolls back via the Prometheus `error_rate > 0.05` guardrail. |
+| **Flagsmith experiment results / Bayesian metrics** | Fully implemented in `guardian/metrics/flagsmith_exp.py` and active in the live demo (`scripts/demo.sh`). Real events are emitted via Flagsmith Python SDK 6.3.0+, stored in PostgreSQL, and Bayesian inference (lift, chance to win, chance to be worse) is calculated by Flagsmith. |
+| **SRM and chance_to_be_worse guardrails** | Fully implemented and triggered in `scripts/demo.sh`. When variant traffic is skewed (dropping variation exposures), Flagsmith computes $p < 0.001$, Guardian triggers an SRM Warning, and operator approval is strictly blocked. |
+| **ClickHouse vs. PostgreSQL Warehouse** | ClickHouse is not used. Flagsmith self-hosted experimentation runs on Flagsmith's native PostgreSQL database warehouse (`experimentation_sdkexperimentationevent`). ClickHouse was removed from `docker-compose.yml` to eliminate unused overhead. |
+| **Recalculation throttle (`DEMO_FORCE_RECALC`)** | Flagsmith's public API throttles experiment recalculation to once every 300 seconds. For rapid demo runs (< 3 minutes), `DEMO_FORCE_RECALC=1` accelerates calculation via Flagsmith's background task processor and is clearly labeled as `(demo shortcut)`. |
 | **Webhook alerts (Slack / generic)** | Fire only when `SLACK_WEBHOOK_URL` or `GENERIC_WEBHOOK_URL` are set in `.env`. Not configured in the default demo setup. |
 | **Idempotency persistence** | Idempotency keys are stored in-memory. A Guardian restart will re-fire actions once. Production use should persist the idempotency store to disk or Redis. |
 | **Audit log persistence** | The append-only audit log lives in memory and in-process only. It is lost on restart. A production deployment would write to a database or append to a file. |

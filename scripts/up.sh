@@ -4,7 +4,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
-echo "==> Starting Flagsmith, PostgreSQL, and ClickHouse..."
+echo "==> Starting Flagsmith, PostgreSQL, Task Processor, and Prometheus..."
 docker compose up -d
 
 echo "==> Waiting for Flagsmith API to become healthy..."

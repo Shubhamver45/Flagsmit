@@ -39,21 +39,21 @@ wait_for_url() {
     echo -e "  ✔ $name is ready ($url)"
 }
 
+# Ensure no leftover background processes from previous interrupted runs
+pkill -f "guardian.main" 2>/dev/null || true
+pkill -f "demo/simulator.py" 2>/dev/null || true
+
 # 1. Start core infrastructure
-echo "==> Step 1: Starting Flagsmith, PostgreSQL, ClickHouse, Task Processor, and Prometheus..."
-docker compose up -d postgres clickhouse migrate-db flagsmith flagsmith-task-processor prometheus
+echo "==> Step 1: Starting Flagsmith, PostgreSQL, Task Processor, and Prometheus..."
+docker compose up -d --remove-orphans postgres migrate-db flagsmith flagsmith-task-processor prometheus
 
 echo "==> Waiting for Flagsmith API to become ready..."
 wait_for_url "http://localhost:8000/api/v1/" "Flagsmith API" 60
 wait_for_url "http://localhost:9090/-/healthy" "Prometheus" 30
 
-# 2. Run Flagsmith bootstrap setup if .env or keys are missing
-if [ ! -f ".env" ] || ! grep -q "FLAGSMITH_ADMIN_API_KEY=" .env || ! grep -q "FLAGSMITH_ENVIRONMENT_KEY=" .env; then
-    echo "==> Step 2: Auto-provisioning Flagsmith (Org, Project, Environment, Flag, Master Key)..."
-    python3 scripts/setup_flagsmith.py
-else
-    echo "==> Step 2: Existing configuration detected in .env"
-fi
+# 2. Run Flagsmith bootstrap setup to ensure clean keys and experiment state
+echo "==> Step 2: Auto-provisioning Flagsmith (Org, Project, Environment, Flag, Master Key)..."
+python3 scripts/setup_flagsmith.py
 
 # Export keys from .env into current shell for docker-compose interpolation
 set -a
@@ -142,7 +142,9 @@ wait_for_state() {
 
 # Helper functions for Flagsmith Experimentation Results
 refresh_flagsmith_experiment() {
-    docker compose exec -T flagsmith python manage.py shell -c "
+    if [ "${DEMO_FORCE_RECALC:-1}" = "1" ]; then
+        echo "  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor..."
+        docker compose exec -T flagsmith python manage.py shell -c "
 from experimentation.tasks import compute_experiment_results
 from experimentation.models import Experiment, ExperimentResults
 from django.utils import timezone
@@ -153,7 +155,30 @@ if exp:
         refresh_requested_at=timezone.now() - timezone.timedelta(minutes=6)
     )
 " > /dev/null 2>&1 || true
-    sleep 2
+        sleep 2
+    else
+        echo "  Triggering experiment refresh via public API (POST /results/refresh/)..."
+        python3 -c "
+import os, requests
+from dotenv import dotenv_values
+env = dotenv_values('.env')
+url = f'{env.get(\"FLAGSMITH_URL\", \"http://localhost:8000/api/v1\")}/environments/{env.get(\"FLAGSMITH_ENVIRONMENT_KEY\", \"\")}/experiments/'
+headers = {'Authorization': f'Api-Key {env.get(\"FLAGSMITH_ADMIN_API_KEY\", \"\")}'}
+try:
+    r = requests.get(url, headers=headers, timeout=5).json()
+    if r.get('results'):
+        exp_id = r['results'][0]['id']
+        ref = requests.post(f'{url}{exp_id}/results/refresh/', headers=headers, timeout=5)
+        if ref.status_code in (200, 202):
+            print(f'  ✔ Refresh queued via public API (HTTP {ref.status_code})')
+        elif ref.status_code == 429:
+            print('  ℹ Cooldown active (HTTP 429); reading last computed results as designed')
+        else:
+            print(f'  Public refresh returned HTTP {ref.status_code}')
+except Exception as e:
+    print('  Public API refresh error:', e)
+"
+    fi
 }
 
 get_flagsmith_raw_results() {
@@ -182,9 +207,19 @@ try:
     exp = s.get('experiment')
     if exp:
         print(f\"  • Experiment Name   : {exp.get('name')}\")
-        print(f\"  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of {exp.get('as_of')}\")
-        print(f\"  • Chance to be Worse: {exp.get('chance_to_be_worse')}%\")
-        print(f\"  • SRM Status        : {'WARNING (Corrupt)' if exp.get('srm_warning') else 'Healthy (p-value: ' + str(exp.get('srm_p_value')) + ')'}\")
+        shortcut_tag = ' (demo shortcut)' if exp.get('demo_shortcut') else ''
+        print(f\"  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of {exp.get('as_of')}{shortcut_tag}\")
+        cw = exp.get('chance_to_be_worse')
+        cw_str = f\"{cw}%\" if cw is not None else \"n/a (collecting data)\"
+        print(f\"  • Chance to be Worse: {cw_str}\")
+        srm_p = exp.get('srm_p_value')
+        if exp.get('srm_warning'):
+            srm_str = f\"WARNING (Corrupt, p-value: {srm_p:.6f})\" if srm_p is not None else \"WARNING (Corrupt)\"
+        elif srm_p is not None:
+            srm_str = f\"Healthy (p-value: {srm_p})\"
+        else:
+            srm_str = \"Healthy (p-value: n/a (collecting data))\"
+        print(f\"  • SRM Status        : {srm_str}\")
         print(f\"  • Collecting Data   : {exp.get('is_collecting_data')}\")
         print(f\"  • Approval Gate     : {'ELIGIBLE (Clear for 100% promotion)' if exp.get('is_eligible_for_approval') else 'BLOCKED: ' + str(exp.get('block_reason'))}\")
 except Exception as e:
@@ -215,7 +250,7 @@ fi
 
 echo ""
 echo "--- Phase 3: Clean Balanced Traffic & Human Operator Sign-off ---"
-echo "Generating balanced conversion events so both variants accumulate statistical significance..."
+echo "Generating balanced conversion events (simulated conversion rates: ~65% control, ~95% variation)..."
 PYTHONPATH=. python3 demo/simulator.py --requests 180 --identities 200 > /dev/null
 refresh_flagsmith_experiment
 

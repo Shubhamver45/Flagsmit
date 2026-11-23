@@ -458,16 +458,17 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         document.getElementById('experiment-card').style.display = 'block';
         const exp = data.experiment;
         const asOfStr = exp.as_of ? new Date(exp.as_of).toUTCString() : (exp.as_of || '--');
-        document.getElementById('exp-as-of').innerText = 'results computed by Flagsmith from events sent by the demo app, as of ' + asOfStr;
+        const shortcutTag = exp.demo_shortcut ? ' (demo shortcut)' : '';
+        document.getElementById('exp-as-of').innerText = 'results computed by Flagsmith from events sent by the demo app, as of ' + asOfStr + shortcutTag;
 
         const cwEl = document.getElementById('exp-chance-worse');
-        if (exp.is_collecting_data) {
-          cwEl.innerText = 'Collecting data...';
+        if (exp.is_collecting_data || exp.chance_to_be_worse === null || exp.chance_to_be_worse === undefined) {
+          cwEl.innerText = 'n/a (collecting data)';
           cwEl.style.color = '#fbbf24';
         } else {
-          const cwVal = exp.chance_to_be_worse !== null && exp.chance_to_be_worse !== undefined ? (typeof exp.chance_to_be_worse === 'number' ? exp.chance_to_be_worse.toFixed(1) + '%' : exp.chance_to_be_worse) : '--';
+          const cwVal = typeof exp.chance_to_be_worse === 'number' ? exp.chance_to_be_worse.toFixed(1) + '%' : exp.chance_to_be_worse;
           cwEl.innerText = cwVal;
-          if (exp.chance_to_be_worse !== null && exp.chance_to_be_worse > 10.0) {
+          if (typeof exp.chance_to_be_worse === 'number' && exp.chance_to_be_worse > 10.0) {
             cwEl.style.color = '#f87171';
           } else {
             cwEl.style.color = '#34d399';
@@ -479,15 +480,15 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         if (exp.srm_warning) {
           srmEl.innerText = 'SRM DETECTED!';
           srmEl.style.color = '#f87171';
-          srmPEl.innerText = `p-value: ${exp.srm_p_value !== null && exp.srm_p_value !== undefined ? exp.srm_p_value.toFixed(6) : '--'} (< 0.001)`;
-        } else if (exp.is_collecting_data && exp.srm_p_value === null) {
+          srmPEl.innerText = `p-value: ${exp.srm_p_value !== null && exp.srm_p_value !== undefined ? exp.srm_p_value.toFixed(6) : 'n/a (collecting data)'} (< 0.001)`;
+        } else if (exp.is_collecting_data || exp.srm_p_value === null || exp.srm_p_value === undefined) {
           srmEl.innerText = 'Collecting data';
           srmEl.style.color = '#fbbf24';
-          srmPEl.innerText = 'Awaiting 100+ identities';
+          srmPEl.innerText = 'p-value: n/a (collecting data)';
         } else {
           srmEl.innerText = 'No SRM';
           srmEl.style.color = '#34d399';
-          srmPEl.innerText = `p-value: ${exp.srm_p_value !== null && exp.srm_p_value !== undefined ? exp.srm_p_value.toFixed(4) : '--'} (limit: 0.001)`;
+          srmPEl.innerText = `p-value: ${exp.srm_p_value.toFixed(4)} (limit: 0.001)`;
         }
 
         const liftVal = exp.lift !== null && exp.lift !== undefined ? ((exp.lift >= 0 ? '+' : '') + (exp.lift * 100).toFixed(1) + '%') : '--';
@@ -586,7 +587,10 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           pillText = 'LOW SAMPLES';
         }
 
-        const val = g.value !== null && g.value !== undefined ? (typeof g.value === 'number' ? g.value.toFixed(2) + '%' : g.value) : '--';
+        const isExpGuardrail = g.metric_source === 'flagsmith_experiment' || g.name.startsWith('checkout_ab');
+        const val = (g.value !== null && g.value !== undefined)
+          ? (typeof g.value === 'number' ? g.value.toFixed(2) + '%' : g.value)
+          : (isExpGuardrail ? 'n/a (collecting data)' : '--');
         const samples = g.sample_size !== null && g.sample_size !== undefined ? g.sample_size : '--';
         const threshold = g.threshold !== undefined ? `${g.comparison || '<'} ${g.threshold}%` : '--';
 

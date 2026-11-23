@@ -33,7 +33,7 @@ Open the following browser tabs (or split-screen layout):
 > 
 > *Guardian is configured with a staged rollout pipeline: 1%, 5%, 25%, and 100%, with automated guardrails and human approval.*  
 > 
-> *In the background, our simulator is sending live traffic across hundreds of distinct user identities. As you can see on the dashboard, the error rate is well below our 5% threshold.*  
+> *In the background, our simulator is sending live traffic across hundreds of distinct user identities (with simulated conversion rates: ~65% control, ~95% variation to model positive conversion lift).*  
 > 
 > *Guardian advances from 1% to 5%, and then to 25%. In Flagsmith, you can see the multivariate allocation updating live through the Admin API.*  
 > 
@@ -43,7 +43,7 @@ Open the following browser tabs (or split-screen layout):
 > 
 > *Second, Guardian detects Sample Ratio Mismatch (SRM). If traffic assignment becomes corrupted—for example, if exposures on a variation arm are dropped—Flagsmith's chi-squared test detects it with p < 0.001. Guardian immediately flags an SRM Warning on the dashboard and disables the Approve button.*  
 > 
-> *Once balanced traffic flows and Flagsmith computes positive lift (+38.6%) with a healthy SRM p-value, Guardian verifies the Bayesian chance-to-be-worse is safe. The status page displays: 'results computed by Flagsmith from events sent by the demo app, as of <time>'.*  
+> *Once balanced traffic flows and Flagsmith computes positive lift with a healthy SRM p-value, Guardian verifies the Bayesian chance-to-be-worse is safe. The status page displays: 'results computed by Flagsmith from events sent by the demo app, as of <time>'.*  
 > 
 > *Now the operator can safely sign off via the dashboard or with a single CLI command:*  
 > ```bash
