@@ -46,6 +46,32 @@ jobs:
             type=semver,pattern={{version}}
             type=sha,format=short
 
+      - name: Build local image for health check
+        run: |
+          docker build -t test-guardian:local .
+
+      - name: Verify container runs with env-only dummy config and GET /health responds
+        run: |
+          docker run -d --name guardian-smoke -p 8080:8080 \
+            -e FLAGSMITH_URL="http://localhost:8000/api/v1" \
+            -e FLAGSMITH_ADMIN_API_KEY="dummy_admin_key" \
+            -e FLAGSMITH_ENVIRONMENT_KEY="dummy_env_key" \
+            -e FLAG_NAME="new_checkout" \
+            -e PROMETHEUS_URL="http://localhost:9090" \
+            -e STAGES="1,5,25,100" \
+            -e SOAK_TIME_SECONDS="30" \
+            test-guardian:local
+
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/health; then
+              echo "Health check succeeded!"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:8080/health || (docker logs guardian-smoke && exit 1)
+          docker stop guardian-smoke && docker rm guardian-smoke
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:

@@ -1,0 +1,37 @@
+# Guardian Configuration: new_checkout guarded rollout for demo
+flag_name: "new_checkout"
+# environment_key is loaded from .env (or resolved dynamically from Flagsmith)
+environment_key: ""
+
+# Phased rollout percentages
+stages:
+  - 1
+  - 5
+  - 25
+  - 100
+
+# Minimum soak time (seconds) to monitor healthy metrics before advancing
+soak_time_seconds: 30
+
+# Gate final 100% stage behind explicit human approval
+require_approval_before_final: true
+
+# Guardrail metric triggers: error rate on new variant must not exceed 5%
+guardrails:
+  - name: "new_flow_error_rate"
+    metric_source: "prometheus"
+    comparison: ">"
+    threshold: 5.0
+    query: "((sum(rate(checkout_errors_total{variant='new_flow'}[15s])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[15s])) > 0 or vector(1))) * 100"
+    sample_size_query: "sum(checkout_requests_total)"
+    min_samples: 25
+    description: "Rollback to 0 if new checkout error rate exceeds 5.0%"
+
+  - name: "checkout_ab_chance_to_be_worse"
+    metric_source: "flagsmith_experiment"
+    metric_id: 1
+    comparison: ">"
+    threshold: 10.0
+    min_samples: 50
+    action_on_srm: "HOLD"
+    description: "Hold rollout if Bayesian chance-to-be-worse > 10.0% or if SRM warning fires"

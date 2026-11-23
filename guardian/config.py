@@ -105,6 +105,12 @@ def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
 def load_config(file_path: str | Path = "config.yaml") -> RolloutConfig:
     import os
     p = Path(file_path)
+    if not p.exists() and str(file_path) == "config.yaml":
+        if Path("config.demo.yaml").exists():
+            p = Path("config.demo.yaml")
+        elif Path("config.example.yaml").exists():
+            p = Path("config.example.yaml")
+
     if p.exists():
         with open(p, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}

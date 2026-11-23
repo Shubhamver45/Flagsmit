@@ -203,9 +203,24 @@ Operators approve the final 100% promotion through either:
 
 ## Use it with your own Flagsmith in 5 Minutes
 
-Guardian has been validated on **self-hosted Flagsmith** (Flagsmith Community & Enterprise) and can manage any arbitrary project and feature flag—not just our demo environment.
+Guardian has been tested on **open-source self-hosted Flagsmith only** and can manage any arbitrary project and feature flag—not just our demo environment.
 
 > **Note on Flagsmith Cloud**: While Guardian communicates using standard Flagsmith v1 REST and SDK APIs, **Flagsmith Cloud is currently untested** in our automated integration suite.
+
+### Local Python 3.12 Environment Setup
+
+To run Guardian locally with Python 3.12:
+
+```bash
+# Create and activate a Python 3.12 virtual environment
+python3.12 -m venv .venv
+source .venv/bin/activate
+
+# Install development dependencies and install Guardian in editable mode
+pip install --upgrade pip
+pip install -r requirements-dev.txt
+pip install -e .
+```
 
 ```mermaid
 flowchart LR

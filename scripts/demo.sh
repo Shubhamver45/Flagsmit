@@ -83,7 +83,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 5. Start Guardian Daemon (DEMO_MODE=1, soak: 3s per stage for fast demonstration)
+# 5. Ensure Guardian configuration exists (from tracked config.demo.yaml or config.example.yaml)
+if [ ! -f "config.yaml" ]; then
+    echo "==> Generating config.yaml from config.demo.yaml..."
+    cp config.demo.yaml config.yaml 2>/dev/null || cp config.example.yaml config.yaml
+fi
+
+# 6. Start Guardian Daemon (DEMO_MODE=1, soak: 3s per stage for fast demonstration)
 echo "==> Step 4: Launching Guardian daemon on http://localhost:8080 (DEMO_MODE=1, soak: 3s)..."
 DEMO_MODE=1 DEMO_SOAK_SECONDS=3 PYTHONPATH=. python3 -m guardian.main --port 8080 --interval 1 --demo-mode &
 GUARDIAN_PID=$!
