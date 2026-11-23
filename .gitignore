@@ -1,6 +1,8 @@
 # Environment variables and secrets
 .env
 *.env.local
+config.*.yaml
+!config.example.yaml
 
 # Python
 __pycache__/

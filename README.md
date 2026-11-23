@@ -7,7 +7,7 @@
 [![Flagsmith](https://img.shields.io/badge/Flagsmith-Self--Hosted-purple.svg)](https://flagsmith.com/)
 [![Tests](https://img.shields.io/badge/Tests-passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/YOUR_USERNAME/guardian/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CI](https://github.com/shubhamver45/Flagsmit/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 ---
 
@@ -163,7 +163,7 @@ This single command:
 | Service | URL | Credentials / Notes |
 | :--- | :--- | :--- |
 | **Guardian Status Page** | [http://localhost:8080/](http://localhost:8080/) | Live real-time rollout dashboard with operator actions |
-| **Flagsmith Admin Dashboard** | [http://localhost:8000/](http://localhost:8000/) | `admin@example.com` / `AdminPassword123!` |
+| **Flagsmith Admin Dashboard** | [http://localhost:8000/](http://localhost:8000/) | `admin@example.com` / see README (`ADMIN_PASSWORD` in `.env`) |
 | **Demo Checkout App** | [http://localhost:5001/](http://localhost:5001/) | Gated checkout app with `/metrics` and `/checkout` |
 | **Prometheus Dashboard** | [http://localhost:9090/](http://localhost:9090/) | Real-time PromQL query interface |
 
@@ -203,7 +203,9 @@ Operators approve the final 100% promotion through either:
 
 ## Use it with your own Flagsmith in 5 Minutes
 
-Guardian is designed to run against **any Flagsmith deployment** (Flagsmith Cloud or self-hosted) and any feature flag—not just our demo environment.
+Guardian has been validated on **self-hosted Flagsmith** (Flagsmith Community & Enterprise) and can manage any arbitrary project and feature flag—not just our demo environment.
+
+> **Note on Flagsmith Cloud**: While Guardian communicates using standard Flagsmith v1 REST and SDK APIs, **Flagsmith Cloud is currently untested** in our automated integration suite.
 
 ```mermaid
 flowchart LR
@@ -224,11 +226,11 @@ python3 -m guardian.cli init
 
 # Or run non-interactively with arguments
 python3 -m guardian.cli init \
-  --flagsmith-url "https://edge.api.flagsmith.com/api/v1" \
+  --flagsmith-url "http://localhost:8000/api/v1" \
   --admin-api-key "your_flagsmith_master_admin_api_key" \
   --environment-key "your_environment_client_key" \
   --flag-name "my_production_feature" \
-  --prometheus-url "http://prometheus:9090" \
+  --prometheus-url "http://localhost:9090" \
   --stages "1, 5, 25, 100" \
   --soak 30 \
   --save-env \
@@ -249,7 +251,7 @@ docker run -d \
   -p 8080:8080 \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   --env-file .env \
-  ghcr.io/your-org/flagsmith-guardian:latest
+  ghcr.io/shubhamver45/flagsmith-guardian:latest
 ```
 
 ##### Option B: Run via Python CLI
@@ -262,15 +264,16 @@ python3 -m guardian.main --port 8080 --interval 5
 Guardian can run with **zero config files mounted**, using only environment variables:
 ```bash
 docker run -d \
+  --name flagsmith-guardian \
   -p 8080:8080 \
-  -e FLAGSMITH_URL="https://edge.api.flagsmith.com/api/v1" \
+  -e FLAGSMITH_URL="http://localhost:8000/api/v1" \
   -e FLAGSMITH_ADMIN_API_KEY="your_admin_api_key" \
   -e FLAGSMITH_ENVIRONMENT_KEY="your_env_key" \
   -e FLAG_NAME="my_production_feature" \
-  -e PROMETHEUS_URL="http://prometheus:9090" \
+  -e PROMETHEUS_URL="http://localhost:9090" \
   -e STAGES="1,5,25,100" \
   -e SOAK_TIME_SECONDS="30" \
-  ghcr.io/your-org/flagsmith-guardian:latest
+  ghcr.io/shubhamver45/flagsmith-guardian:latest
 ```
 
 #### Step 4: Monitor Rollout Status
@@ -319,7 +322,7 @@ Guardian is driven by a clean YAML configuration schema ([`config.yaml`](config.
 # Target feature flag managed in Flagsmith
 flag_name: "new_checkout"
 # environment_key is loaded from .env or configured here
-environment_key: "N6LnMxtye9LM89yM7qwv8t"
+environment_key: "your_environment_key"
 
 # Phased rollout percentages
 stages:
@@ -409,7 +412,7 @@ Guardian is published as a multi-architecture Docker container to GHCR:
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/your-org/flagsmith-guardian:latest
+docker pull ghcr.io/shubhamver45/flagsmith-guardian:latest
 ```
 
 The repository includes a GitHub Actions workflow ([`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)) that:
@@ -424,7 +427,7 @@ The repository includes a GitHub Actions workflow ([`.github/workflows/docker-pu
 Guardian maintains a comprehensive unit test suite covering configuration validation, state transitions, Flagsmith API request structures, Prometheus PromQL evaluations, Flagsmith Bayesian experiments, SRM anomaly gating, idempotency protection, and FastAPI endpoints:
 
 ```bash
-# Run complete test suite (27 passing tests)
+# Run complete test suite (43 passing tests)
 python3 -m pytest -v tests/
 ```
 

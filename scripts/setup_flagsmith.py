@@ -3,8 +3,8 @@ import sys
 import time
 
 def setup():
-    admin_email = "admin@example.com"
-    admin_password = "AdminPassword123!"
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "changeme_flagsmith_admin_pass")
 
     from users.models import FFAdminUser
     from organisations.models import Organisation, OrganisationRole, UserOrganisation

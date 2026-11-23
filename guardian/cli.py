@@ -217,7 +217,7 @@ guardrails:
     print("------------------------------------------------------------------------")
     print(f"1. Start Guardian daemon:")
     print(f"   python3 -m guardian.main --port 8080")
-    print(f"   (or via Docker: docker run -p 8080:8080 -v $(pwd)/{output_path}:/app/config.yaml ghcr.io/<org>/flagsmith-guardian:latest)")
+    print(f"   (or via Docker: docker run -p 8080:8080 -v $(pwd)/{output_path}:/app/config.yaml ghcr.io/shubhamver45/flagsmith-guardian:latest)")
     print(f"2. Inspect live status in browser or CLI:")
     print(f"   open http://localhost:8080/  OR  python3 -m guardian.cli status")
     print(f"3. When ready for final promotion:")
