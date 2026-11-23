@@ -22,7 +22,7 @@ guardrails:
     metric_source: "prometheus"
     comparison: ">"
     threshold: 5.0
-    query: "((sum(rate(checkout_errors_total{variant='new_flow'}[30s])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[30s])) > 0 or vector(1))) * 100"
+    query: "((sum(rate(checkout_errors_total{variant='new_flow'}[15s])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[15s])) > 0 or vector(1))) * 100"
     sample_size_query: "sum(checkout_requests_total)"
     min_samples: 25
     description: "Rollback to 0 if new checkout error rate exceeds 5.0%"

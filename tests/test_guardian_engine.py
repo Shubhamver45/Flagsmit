@@ -241,3 +241,64 @@ def test_engine_approval_succeeds_with_healthy_experiment(fake_flagsmith):
     assert status["experiment"]["chance_to_be_worse"] == 5.8
     assert status["experiment"]["srm_warning"] is False
     assert status["experiment"]["is_eligible_for_approval"] is True
+
+
+def test_engine_reset_rejected_when_guardrail_breaching(fake_flagsmith):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    from unittest.mock import MagicMock
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        guardrails=[
+            Guardrail(name="error_rate", metric_source="prometheus", comparison=">", threshold=5.0)
+        ],
+    )
+    mock_provider = MagicMock()
+    mock_provider.evaluate_all.return_value = [
+        MetricEvaluation(
+            name="error_rate",
+            value=12.5,
+            sample_size=100,
+            is_breached=True,
+            status=MetricStatus.BREACH,
+            reason="Metric value 12.50% > threshold 5.0% (BREACH)",
+        )
+    ]
+    engine = GuardianEngine(config=cfg, flagsmith_client=fake_flagsmith, metric_provider=mock_provider)
+    engine.state_machine.current_state = RolloutState.ROLLED_BACK.value
+
+    with pytest.raises(ValueError, match="Cannot re-arm rollout: Guardrail 'error_rate' is currently breaching"):
+        engine.reset()
+
+    # State must stay in ROLLED_BACK
+    assert engine.current_state == RolloutState.ROLLED_BACK.value
+
+
+def test_engine_reset_succeeds_when_guardrails_healthy(fake_flagsmith):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    from unittest.mock import MagicMock
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        guardrails=[
+            Guardrail(name="error_rate", metric_source="prometheus", comparison=">", threshold=5.0)
+        ],
+    )
+    mock_provider = MagicMock()
+    mock_provider.evaluate_all.return_value = [
+        MetricEvaluation(
+            name="error_rate",
+            value=0.2,
+            sample_size=100,
+            is_breached=False,
+            status=MetricStatus.HEALTHY,
+            reason="Metric value 0.20% healthy",
+        )
+    ]
+    engine = GuardianEngine(config=cfg, flagsmith_client=fake_flagsmith, metric_provider=mock_provider)
+    engine.state_machine.current_state = RolloutState.ROLLED_BACK.value
+
+    entry = engine.reset()
+    assert engine.current_state == RolloutState.PENDING.value
+    assert engine.current_percentage == 0.0
+    assert entry.decision == "ADVANCE"

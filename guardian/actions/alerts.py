@@ -31,7 +31,14 @@ class AlertDispatcher:
         results = {}
 
         if self.slack_webhook_url:
-            results["slack"] = self._send_slack(entry)
+            success = self._send_slack(entry)
+            results["slack"] = success
+            if success:
+                print(f"📢 [Slack Alert] Slack alert sent successfully for {entry.decision}")
+            else:
+                print(f"⚠️  [Slack Alert] Failed to send Slack alert for {entry.decision}")
+        else:
+            print("ℹ️  [Slack Alert] Slack alert skipped (no webhook set)")
 
         if self.generic_webhook_url:
             results["generic"] = self._send_generic(entry)

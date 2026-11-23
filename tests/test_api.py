@@ -119,6 +119,31 @@ def test_api_reset(mock_engine):
     assert data["current_percentage"] == 0.0
 
 
+def test_api_reset_rejected_when_guardrail_breaching(mock_engine):
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    app = create_app(mock_engine)
+    client = TestClient(app)
+
+    mock_provider = MagicMock()
+    mock_provider.evaluate_all.return_value = [
+        MetricEvaluation(
+            name="error_rate",
+            value=18.2,
+            sample_size=120,
+            is_breached=True,
+            status=MetricStatus.BREACH,
+            reason="Metric value 18.20% > threshold 5.0% (BREACH)",
+        )
+    ]
+    mock_engine.metric_provider = mock_provider
+    mock_engine.state_machine.current_state = RolloutState.ROLLED_BACK.value
+
+    res = client.post("/reset")
+    assert res.status_code == 400
+    assert "Cannot re-arm rollout" in res.json()["detail"]
+    assert "error_rate" in res.json()["detail"]
+
+
 def test_cli_call_api_success():
     with patch("urllib.request.urlopen") as mock_urlopen:
         mock_resp = MagicMock()

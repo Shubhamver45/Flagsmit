@@ -234,7 +234,20 @@ class GuardianEngine:
     def reset(self) -> AuditEntry:
         """
         Resets rollout state back to PENDING (0%) and clears idempotency tracking.
+        Rejects re-arm if any guardrail is currently in a BREACH state.
         """
+        # Validate that no guardrail is currently in breach
+        if hasattr(self.metric_provider, "evaluate_all"):
+            evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
+            self.latest_evaluations = evaluations
+            for ev in evaluations:
+                if ev.is_breached:
+                    val_str = f"{ev.value:.2f}%" if ev.value is not None else "unknown"
+                    raise ValueError(
+                        f"Cannot re-arm rollout: Guardrail '{ev.name}' is currently breaching "
+                        f"(observed {val_str}). Resolve the underlying fault before re-arming: {ev.reason}"
+                    )
+
         prev_state = self.state_machine.current_state
         self.state_machine = RolloutStateMachine(self.config)
         self.idempotency_manager.reset()
@@ -331,6 +344,7 @@ class GuardianEngine:
             "stages": self.config.stages,
             "soak_time_seconds": self.config.soak_time_seconds,
             "soak_elapsed_seconds": soak_elapsed,
+            "slack_webhook_configured": bool(self.alert_dispatcher.slack_webhook_url),
             "guardrails": guardrail_reports,
             "experiment": experiment_summary,
             "timeline": [e.to_dict() for e in reversed(self.audit_logger.entries)],

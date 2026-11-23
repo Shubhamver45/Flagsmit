@@ -101,7 +101,7 @@ echo "========================================================================"
 echo "🎉 ALL SYSTEMS READY — EXECUTING DEMO WORKFLOW"
 echo "========================================================================"
 echo "  • Guardian Live Dashboard : http://localhost:8080/"
-echo "  • Flagsmith UI            : http://localhost:8000/ (admin@example.com / AdminPassword123!)"
+echo "  • Flagsmith UI            : http://localhost:8000/ (admin@example.com / see README)"
 echo "  • Demo Checkout App       : http://localhost:5001/"
 echo "  • Prometheus Graph        : http://localhost:9090/"
 echo "========================================================================"
@@ -281,7 +281,6 @@ echo "✔ Automated rollback to 0% completed in ${ELAPSED}s!"
 
 # Stop fault immediately so Prometheus rate window begins draining clean traffic
 curl -s -X POST "http://localhost:5001/toggle-bug?enabled=0" > /dev/null
-curl -s -X POST "http://localhost:5001/reset-metrics" > /dev/null
 
 python3 -c "
 import urllib.request, json
@@ -300,34 +299,43 @@ try:
         print(f\"  • Time to Rollback: ${ELAPSED}s\")
     else:
         print(f\"  • Time to Rollback: ${ELAPSED}s (State: {s.get('state')})\")
+    if s.get('slack_webhook_configured'):
+        print(\"  • Slack Alert     : Slack alert sent to configured incoming webhook\")
+    else:
+        print(\"  • Slack Alert     : Slack alert skipped (no webhook set in .env)\")
 except Exception as ex:
     print(f\"  • Rollback status check note: {ex}\")
 "
 
 echo ""
 echo "--- Phase 5 (Scenario 2): SRM Anomaly Simulation & Blocked Approval Gate ---"
-echo "Resetting rollout to demonstrate SRM safety breaker..."
-# Wait for Prometheus 30s sliding rate window to clear historical breach samples
-printf "  ⏳ Waiting for Prometheus 30s rate window to clear (< 1.0%%)..."
-for i in {1..25}; do
-    err_rate=$(python3 -c "
-import urllib.request, urllib.parse, json
-q = urllib.parse.quote('((sum(rate(checkout_errors_total{variant=\"new_flow\"}[30s])) or vector(0)) / (sum(rate(checkout_requests_total{variant=\"new_flow\"}[30s])) > 0 or vector(1))) * 100')
-try:
-    res = json.loads(urllib.request.urlopen(f'http://localhost:9090/api/v1/query?query={q}', timeout=2).read())
-    print(float(res['data']['result'][0]['value'][1]))
-except Exception:
-    print('0.0')
-" 2>/dev/null || echo "0.0")
-    if python3 -c "import sys; sys.exit(0 if float('$err_rate') < 1.0 else 1)" 2>/dev/null; then
-        echo " [Clean: ${err_rate}%]"
+echo "Attempting operator re-arm via POST /reset (strictly rejected while guardrail is breaching)..."
+MAX_REARM_RETRIES=30
+REARM_COUNT=0
+REARM_SUCCESS=0
+while [ "$REARM_COUNT" -lt "$MAX_REARM_RETRIES" ]; do
+    if RESET_OUT=$(python3 -m guardian.cli reset 2>&1); then
+        echo -e "\n✔ Rollout successfully re-armed to PENDING (guardrails healthy)."
+        REARM_SUCCESS=1
         break
+    else
+        if [ "$REARM_COUNT" -eq 0 ]; then
+            REASON_LINE=$(echo "$RESET_OUT" | grep "Error" || echo "$RESET_OUT")
+            echo "  ℹ Re-arm rejected as expected: $REASON_LINE"
+            printf "  ⏳ Waiting for guardrail metric to recover before re-arm succeeds..."
+        else
+            printf "."
+        fi
+        sleep 1
+        REARM_COUNT=$((REARM_COUNT + 1))
     fi
-    sleep 2
-    printf "."
 done
 
-python3 -m guardian.cli reset > /dev/null
+if [ "$REARM_SUCCESS" -ne 1 ]; then
+    echo -e "\n❌ Timeout waiting for operator re-arm to succeed"
+    exit 1
+fi
+
 echo "Advancing back to AWAITING_APPROVAL stage..."
 wait_for_state "STAGE_1" 20
 wait_for_state "AWAITING_APPROVAL" 35

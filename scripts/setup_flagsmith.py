@@ -295,6 +295,16 @@ def host_run():
 
     if "=== DOTENV_START ===" in proc.stdout:
         dotenv = proc.stdout.split("=== DOTENV_START ===")[1].split("=== DOTENV_END ===")[0].strip()
+        # Preserve SLACK_WEBHOOK_URL and other custom keys if already defined
+        existing_slack = ""
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                if line.startswith("SLACK_WEBHOOK_URL="):
+                    existing_slack = line.strip()
+        if existing_slack:
+            dotenv += f"\n{existing_slack}\n"
+        else:
+            dotenv += "\n# Webhooks (Optional)\nSLACK_WEBHOOK_URL=\n"
         with open(env_file, "w", encoding="utf-8") as f:
             f.write(dotenv + "\n")
         print(f"✔ Automatically configured and wrote {env_file}!")

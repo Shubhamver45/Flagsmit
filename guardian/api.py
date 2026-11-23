@@ -108,14 +108,19 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
 
     @app.post("/reset", dependencies=[Depends(verify_write_token)])
     def reset_rollout() -> Dict[str, Any]:
-        entry = engine.reset()
-        return {
-            "status": "reset",
-            "message": "Rollout reset to PENDING",
-            "current_state": engine.current_state,
-            "current_percentage": engine.current_percentage,
-            "audit_entry": entry.to_dict(),
-        }
+        try:
+            entry = engine.reset()
+            return {
+                "status": "reset",
+                "message": "Rollout reset to PENDING",
+                "current_state": engine.current_state,
+                "current_percentage": engine.current_percentage,
+                "audit_entry": entry.to_dict(),
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     @app.post("/tick", dependencies=[Depends(verify_write_token)])
     def trigger_tick() -> Dict[str, Any]:
