@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     name: Run pytest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
