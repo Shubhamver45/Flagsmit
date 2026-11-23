@@ -1,4 +1,4 @@
-# Guardian Rollout Configuration
+# Guardian Configuration: new_checkout guarded rollout
 flag_name: "new_checkout"
 # environment_key is loaded from .env (or resolved dynamically from Flagsmith)
 environment_key: ""
@@ -10,13 +10,13 @@ stages:
   - 25
   - 100
 
-# Soak time per stage (in seconds for live demo responsiveness)
-soak_time_seconds: 15
+# Minimum soak time (seconds) to monitor healthy metrics before advancing
+soak_time_seconds: 30
 
-# Require human operator approval before final 100% promotion
+# Gate final 100% stage behind explicit human approval
 require_approval_before_final: true
 
-# Guardrail metric sources
+# Guardrail metric triggers: error rate on new variant must not exceed 5%
 guardrails:
   - name: "new_flow_error_rate"
     metric_source: "prometheus"
@@ -25,7 +25,7 @@ guardrails:
     query: "((sum(rate(checkout_errors_total{variant='new_flow'}[15s])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[15s])) > 0 or vector(1))) * 100"
     sample_size_query: "sum(checkout_requests_total)"
     min_samples: 25
-    description: "Trigger immediate rollback to 0% if new flow error rate exceeds 5.0%"
+    description: "Rollback to 0 if new checkout error rate exceeds 5.0%"
 
   - name: "checkout_ab_chance_to_be_worse"
     metric_source: "flagsmith_experiment"
