@@ -270,18 +270,64 @@ echo "✔ Feature flag successfully promoted to 100%!"
 echo ""
 echo "--- Phase 4: Fault Injection (Failure Spike) & Automated Rollback ---"
 echo "Injecting fault into new checkout flow via Demo App (BUG_IN_NEW_CHECKOUT=1)..."
+BUG_INJECT_TIME=$(python3 -c "import time; print(time.time())")
 curl -s -X POST "http://localhost:5001/toggle-bug?enabled=1" | python3 -m json.tool
 echo "Traffic simulator is now receiving ~30% payment processing errors on new_flow."
 echo "Guardian is monitoring Prometheus PromQL guardrail: error_rate > 5.0%..."
 wait_for_state "ROLLED_BACK" 30
-echo "✔ Automated rollback to 0% completed successfully with Slack alert emitted."
+ROLLBACK_TIME=$(python3 -c "import time; print(time.time())")
+ELAPSED=$(python3 -c "print(round($ROLLBACK_TIME - $BUG_INJECT_TIME, 1))")
+echo "✔ Automated rollback to 0% completed in ${ELAPSED}s!"
+
+# Stop fault immediately so Prometheus rate window begins draining clean traffic
+curl -s -X POST "http://localhost:5001/toggle-bug?enabled=0" > /dev/null
+curl -s -X POST "http://localhost:5001/reset-metrics" > /dev/null
+
+python3 -c "
+import urllib.request, json
+try:
+    s = json.loads(urllib.request.urlopen('http://localhost:8080/status', timeout=3).read())
+    rb_entry = None
+    for e in s.get('timeline', []):
+        if e.get('decision') == 'ROLLBACK':
+            rb_entry = e
+            break
+    if rb_entry:
+        val = rb_entry.get('numbers', {}).get('metric_value')
+        val_str = f'{val:.2f}%' if isinstance(val, (int, float)) else str(val)
+        print(f\"  • Breach Reason   : {rb_entry.get('reason')}\")
+        print(f\"  • Observed Breach : {val_str} (threshold: 5.0%)\")
+        print(f\"  • Time to Rollback: ${ELAPSED}s\")
+    else:
+        print(f\"  • Time to Rollback: ${ELAPSED}s (State: {s.get('state')})\")
+except Exception as ex:
+    print(f\"  • Rollback status check note: {ex}\")
+"
 
 echo ""
 echo "--- Phase 5 (Scenario 2): SRM Anomaly Simulation & Blocked Approval Gate ---"
 echo "Resetting rollout to demonstrate SRM safety breaker..."
+# Wait for Prometheus 30s sliding rate window to clear historical breach samples
+printf "  ⏳ Waiting for Prometheus 30s rate window to clear (< 1.0%%)..."
+for i in {1..25}; do
+    err_rate=$(python3 -c "
+import urllib.request, urllib.parse, json
+q = urllib.parse.quote('((sum(rate(checkout_errors_total{variant=\"new_flow\"}[30s])) or vector(0)) / (sum(rate(checkout_requests_total{variant=\"new_flow\"}[30s])) > 0 or vector(1))) * 100')
+try:
+    res = json.loads(urllib.request.urlopen(f'http://localhost:9090/api/v1/query?query={q}', timeout=2).read())
+    print(float(res['data']['result'][0]['value'][1]))
+except Exception:
+    print('0.0')
+" 2>/dev/null || echo "0.0")
+    if python3 -c "import sys; sys.exit(0 if float('$err_rate') < 1.0 else 1)" 2>/dev/null; then
+        echo " [Clean: ${err_rate}%]"
+        break
+    fi
+    sleep 2
+    printf "."
+done
+
 python3 -m guardian.cli reset > /dev/null
-curl -s -X POST "http://localhost:5001/toggle-bug?enabled=0" > /dev/null
-curl -s -X POST "http://localhost:5001/reset-metrics" > /dev/null
 echo "Advancing back to AWAITING_APPROVAL stage..."
 wait_for_state "STAGE_1" 20
 wait_for_state "AWAITING_APPROVAL" 35
@@ -289,7 +335,7 @@ wait_for_state "AWAITING_APPROVAL" 35
 echo "Simulating Sample Ratio Mismatch (SRM) by dropping exposure events for variation arm..."
 curl -s -X POST "http://localhost:5001/toggle-srm?enabled=1" | python3 -m json.tool
 echo "Sending skewed traffic to trigger real SRM in Flagsmith database..."
-PYTHONPATH=. python3 demo/simulator.py --prefix srm_user --requests 350 --identities 300 > /dev/null
+PYTHONPATH=. python3 demo/simulator.py --prefix srm_user --requests 450 --identities 400 > /dev/null
 refresh_flagsmith_experiment
 
 echo ""

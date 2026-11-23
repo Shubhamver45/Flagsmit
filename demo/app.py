@@ -83,13 +83,11 @@ def checkout():
     try:
         if force_srm:
             # Severe Sample Ratio Mismatch (SRM) simulation:
-            # Heavily drop variation exposures (drop 95% of variation exposures)
+            # Drop variation exposures entirely to simulate broken tracking in new variant
             identity_flags = flagsmith_client.get_identity_flags(identifier=user_id)
             exp_flag = identity_flags.get_flag("checkout_experiment")
             exp_variant = exp_flag.value if exp_flag else "control"
-            should_track = True
-            if exp_variant == "variation" and random.random() > 0.05:
-                should_track = False
+            should_track = (exp_variant != "variation")
             if should_track:
                 flagsmith_client.track_exposure_event(
                     feature_name="checkout_experiment",
@@ -113,8 +111,8 @@ def checkout():
 
     variant = "new_flow" if is_new_flow else "old_flow"
 
-    # Simulated fault injection: new flow fails ~30% when BUG_IN_NEW_CHECKOUT=1
-    if is_new_flow and BUG_IN_NEW_CHECKOUT and random.random() < 0.30:
+    # Simulated fault injection: new flow fails ~50% when BUG_IN_NEW_CHECKOUT=1
+    if is_new_flow and BUG_IN_NEW_CHECKOUT and random.random() < 0.50:
         CHECKOUT_REQUESTS_TOTAL.labels(variant=variant, status="500").inc()
         CHECKOUT_ERRORS_TOTAL.labels(variant=variant).inc()
         try:

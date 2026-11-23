@@ -236,15 +236,14 @@ guardrails:
     metric_source: "prometheus"
     comparison: ">"
     threshold: 5.0
-    query: "sum(checkout_errors_total{variant='new_flow'}) / sum(checkout_requests_total{variant='new_flow'}) * 100"
-    sample_size_query: "sum(checkout_requests_total{variant='new_flow'})"
+    query: "((sum(rate(checkout_errors_total{variant='new_flow'}[30s])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[30s])) > 0 or vector(1))) * 100"
+    sample_size_query: "sum(checkout_requests_total)"
     min_samples: 25
     description: "Rollback to 0 if new flow error rate exceeds 5.0%"
 
   # Flagsmith Experimentation guardrail
   - name: "checkout_ab_chance_to_be_worse"
     metric_source: "flagsmith_experiment"
-    experiment_id: 1
     metric_id: 1
     comparison: ">"
     threshold: 10.0
