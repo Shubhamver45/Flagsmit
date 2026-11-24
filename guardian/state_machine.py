@@ -39,6 +39,18 @@ class RolloutStateMachine:
         self.stage_entered_at: Optional[float] = None
         self.is_approved: bool = False
 
+    def restore_state(
+        self,
+        current_state: str,
+        current_stage_index: int,
+        stage_entered_at: Optional[float],
+        is_approved: bool = False,
+    ) -> None:
+        self.current_state = current_state
+        self.current_stage_index = current_stage_index
+        self.stage_entered_at = stage_entered_at
+        self.is_approved = is_approved
+
     @property
     def current_percentage(self) -> float:
         if self.current_state == RolloutState.PENDING.value or self.current_state == RolloutState.ROLLED_BACK.value:

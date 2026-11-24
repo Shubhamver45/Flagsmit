@@ -249,18 +249,22 @@ def main():
 
     # Approve subcommand
     approve_parser = subparsers.add_parser("approve", help="Approve final 100%% promotion when awaiting approval")
+    approve_parser.add_argument("--flag", default=None, help="Target feature flag name")
     approve_parser.add_argument("--by", default="operator", help="Approver identity")
     approve_parser.add_argument("--reason", default="Approved final promotion", help="Approval rationale")
 
     # Status subcommand
-    subparsers.add_parser("status", help="Get current rollout status")
+    status_parser = subparsers.add_parser("status", help="Get current rollout status")
+    status_parser.add_argument("--flag", default=None, help="Target feature flag name")
 
     # Rollback subcommand
     rollback_parser = subparsers.add_parser("rollback", help="Force instant manual rollback to 0%%")
+    rollback_parser.add_argument("--flag", default=None, help="Target feature flag name")
     rollback_parser.add_argument("--reason", default="Manual operator rollback", help="Rollback reason")
 
     # Reset subcommand
-    subparsers.add_parser("reset", help="Reset rollout back to initial PENDING state (demo use)")
+    reset_parser = subparsers.add_parser("reset", help="Reset rollout back to initial PENDING state (demo use)")
+    reset_parser.add_argument("--flag", default=None, help="Target feature flag name")
 
     args = parser.parse_args()
 
@@ -269,26 +273,38 @@ def main():
 
     elif args.command == "approve":
         print(f"==> Sending approval to Guardian at {args.url}...")
-        res = call_api("/approve", base_url=args.url, data={"approved_by": args.by, "reason": args.reason}, token=args.token)
+        data = {"approved_by": args.by, "reason": args.reason}
+        if args.flag:
+            data["flag_name"] = args.flag
+        res = call_api("/approve", base_url=args.url, data=data, token=args.token)
         print(f"✅ Success: {res.get('message')}")
         print(f"State: {res.get('current_state')} | Rollout: {res.get('current_percentage')}%")
 
     elif args.command == "status":
-        res = call_api("/status", base_url=args.url, token=args.token)
+        endpoint = f"/status?flag_name={args.flag}" if getattr(args, "flag", None) else "/status"
+        res = call_api(endpoint, base_url=args.url, token=args.token)
         print(f"Flag   : {res.get('flag_name')}")
         print(f"State  : {res.get('state')} (Stage index: {res.get('stage_index')})")
         print(f"Rollout: {res.get('percentage')}%")
         print(f"Stages : {res.get('stages')}")
+        if res.get("drift", {}).get("detected"):
+            print(f"⚠️  DRIFT: {res['drift'].get('message')}")
 
     elif args.command == "rollback":
         print(f"==> Sending rollback to Guardian at {args.url}...")
-        res = call_api("/rollback", base_url=args.url, data={"reason": args.reason}, token=args.token)
+        data = {"reason": args.reason}
+        if args.flag:
+            data["flag_name"] = args.flag
+        res = call_api("/rollback", base_url=args.url, data=data, token=args.token)
         print(f"🛑 Rolled Back: {res.get('message')}")
         print(f"State: {res.get('current_state')} | Rollout: {res.get('current_percentage')}%")
 
     elif args.command == "reset":
         print(f"==> Sending reset to Guardian at {args.url}...")
-        res = call_api("/reset", base_url=args.url, data={}, token=args.token)
+        data = {}
+        if args.flag:
+            data["flag_name"] = args.flag
+        res = call_api("/reset", base_url=args.url, data=data, token=args.token)
         print(f"🔄 Reset: {res.get('message')}")
         print(f"State: {res.get('current_state')} | Rollout: {res.get('current_percentage')}%")
 

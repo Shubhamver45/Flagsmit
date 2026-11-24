@@ -51,6 +51,9 @@ docker-compose.official.yml
 *.idempotency.json
 guardian_audit_*.jsonl
 guardian_audit.jsonl
+data/
+*.db
+*.sqlite3
 
 # Docker volumes and local data
 postgres_data/

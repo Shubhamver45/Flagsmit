@@ -1,6 +1,7 @@
 """
 Guardian Main Daemon Service.
 Runs the FastAPI status server and periodic background evaluation loop.
+Supports multi-rollout configurations, SQLite persistence, and startup reconciliation.
 """
 
 from __future__ import annotations
@@ -12,13 +13,15 @@ import time
 import uvicorn
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, Dict, Optional
 
-from guardian.config import load_config
+from guardian.config import GuardianConfig, RolloutConfig, load_config
 from guardian.audit_log import AuditLogger
 from guardian.flagsmith_client import FlagsmithAdminClient
 from guardian.metrics.prometheus import PrometheusMetricSource
 from guardian.metrics.flagsmith_exp import FlagsmithExperimentMetricSource
 from guardian.metrics.registry import CompositeMetricProvider
+from guardian.storage import GuardianStorage
 from guardian.engine import GuardianEngine
 from guardian.api import create_app
 
@@ -53,7 +56,12 @@ async def background_ticker(engine: GuardianEngine, interval: float = 5.0) -> No
         await asyncio.sleep(interval)
 
 
-def build_engine(config_path: str = "config.yaml", demo_mode: bool = False, demo_soak: Optional[int] = None) -> GuardianEngine:
+def build_engine(
+    config_path: str = "config.yaml",
+    demo_mode: bool = False,
+    demo_soak: Optional[int] = None,
+    storage: Optional[GuardianStorage] = None,
+) -> GuardianEngine:
     load_env_file()
 
     flagsmith_url = os.environ.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
@@ -63,25 +71,45 @@ def build_engine(config_path: str = "config.yaml", demo_mode: bool = False, demo
 
     cfg = load_config(config_path)
 
-    # Allow env overrides for keys, flag name, webhooks, and demo mode
-    overrides: Dict[str, Any] = {}
-    if env_key:
-        overrides["environment_key"] = env_key
-    if os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME"):
-        overrides["flag_name"] = os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME")
-    if os.environ.get("SLACK_WEBHOOK_URL"):
-        overrides["slack_webhook_url"] = os.environ["SLACK_WEBHOOK_URL"]
-    if os.environ.get("GENERIC_WEBHOOK_URL"):
-        overrides["generic_webhook_url"] = os.environ["GENERIC_WEBHOOK_URL"]
-
+    # Determine soak time override
     is_demo = demo_mode or (os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"))
+    soak_override = None
     if is_demo:
-        soak = demo_soak if demo_soak is not None else int(os.environ.get("DEMO_SOAK_SECONDS", "5"))
-        overrides["soak_time_seconds"] = soak
-        print(f"⚡ [DEMO MODE ACTIVE] Accelerated soak duration: {soak}s per stage")
+        soak_override = demo_soak if demo_soak is not None else int(os.environ.get("DEMO_SOAK_SECONDS", "5"))
+        print(f"⚡ [DEMO MODE ACTIVE] Accelerated soak duration: {soak_override}s per stage")
 
-    if overrides:
-        cfg = replace(cfg, **overrides)
+    # Apply overrides
+    if isinstance(cfg, RolloutConfig):
+        overrides: Dict[str, Any] = {}
+        if env_key:
+            overrides["environment_key"] = env_key
+        if os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME"):
+            overrides["flag_name"] = os.environ.get("FLAG_NAME") or os.environ.get("FLAGSMITH_FLAG_NAME")
+        if os.environ.get("SLACK_WEBHOOK_URL"):
+            overrides["slack_webhook_url"] = os.environ["SLACK_WEBHOOK_URL"]
+        if os.environ.get("GENERIC_WEBHOOK_URL"):
+            overrides["generic_webhook_url"] = os.environ["GENERIC_WEBHOOK_URL"]
+        if soak_override is not None:
+            overrides["soak_time_seconds"] = soak_override
+        if overrides:
+            cfg = replace(cfg, **overrides)
+    elif isinstance(cfg, GuardianConfig):
+        updated_rollouts = []
+        for r in cfg.rollouts:
+            r_overrides: Dict[str, Any] = {}
+            if env_key and not r.environment_key:
+                r_overrides["environment_key"] = env_key
+            if os.environ.get("SLACK_WEBHOOK_URL") and not r.slack_webhook_url:
+                r_overrides["slack_webhook_url"] = os.environ["SLACK_WEBHOOK_URL"]
+            if os.environ.get("GENERIC_WEBHOOK_URL") and not r.generic_webhook_url:
+                r_overrides["generic_webhook_url"] = os.environ["GENERIC_WEBHOOK_URL"]
+            if soak_override is not None:
+                r_overrides["soak_time_seconds"] = soak_override
+            if r_overrides:
+                updated_rollouts.append(replace(r, **r_overrides))
+            else:
+                updated_rollouts.append(r)
+        cfg = GuardianConfig(rollouts=updated_rollouts, db_path=cfg.db_path)
 
     client = FlagsmithAdminClient(
         api_url=flagsmith_url,
@@ -102,12 +130,15 @@ def build_engine(config_path: str = "config.yaml", demo_mode: bool = False, demo
         ),
     )
 
-    logger = AuditLogger()
+    guardian_storage = storage or GuardianStorage(db_path=getattr(cfg, "db_path", None))
+    logger = AuditLogger(storage=guardian_storage)
+
     engine = GuardianEngine(
         config=cfg,
         flagsmith_client=client,
         audit_logger=logger,
         metric_provider=provider,
+        storage=guardian_storage,
     )
     return engine
 
@@ -127,11 +158,14 @@ def run_server(
     async def startup_event():
         asyncio.create_task(background_ticker(engine, interval=interval))
 
+    flag_names = list(engine.rollout_configs.keys())
     print(f"\n========================================================")
     print(f"🛡️  Guardian Service Starting")
     print(f"   Status Page : http://localhost:{port}/")
     print(f"   REST API    : http://localhost:{port}/status")
-    print(f"   Flag Target : {engine.config.flag_name}")
+    print(f"   Database    : {engine.storage.db_path}")
+    print(f"   Rollouts ({len(flag_names)}) : {', '.join(flag_names)}")
+    print(f"   Primary Flag: {engine.config.flag_name}")
     print(f"   Stages      : {engine.config.stages}%")
     print(f"   Soak Time   : {engine.config.soak_time_seconds}s per stage")
     print(f"========================================================\n")

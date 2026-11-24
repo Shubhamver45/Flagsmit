@@ -1,13 +1,14 @@
 """
 FastAPI Server for Guardian.
-Provides REST endpoints for status inspection, operator actions, and human approval.
+Provides REST endpoints for status inspection, operator actions, human approval,
+and multi-rollout management with SQLite state persistence.
 """
 
 from __future__ import annotations
 import os
 import secrets
 from typing import Any, Dict, Optional
-from fastapi import FastAPI, HTTPException, Request, Security, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Security, Depends, status, Query
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -18,12 +19,18 @@ from guardian.status_page import STATUS_PAGE_HTML
 
 
 class ApproveRequest(BaseModel):
+    flag_name: Optional[str] = None
     reason: Optional[str] = "Operator approved promotion"
     approved_by: Optional[str] = "operator"
 
 
 class RollbackRequest(BaseModel):
+    flag_name: Optional[str] = None
     reason: Optional[str] = "Operator initiated manual rollback"
+
+
+class ResetRequest(BaseModel):
+    flag_name: Optional[str] = None
 
 
 def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastAPI:
@@ -68,25 +75,41 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
         return {"status": "healthy", "service": "guardian"}
 
     @app.get("/status")
-    def get_status() -> Dict[str, Any]:
-        return engine.get_status()
+    def get_status(flag_name: Optional[str] = None) -> Dict[str, Any]:
+        return engine.get_status(flag_name=flag_name)
+
+    @app.get("/rollouts/{flag_name}/status")
+    def get_rollout_status(flag_name: str) -> Dict[str, Any]:
+        return engine.get_status(flag_name=flag_name)
 
     @app.post("/approve", dependencies=[Depends(verify_write_token)])
-    def approve(payload: Optional[ApproveRequest] = None) -> Dict[str, Any]:
-        current_state = engine.current_state
+    def approve(
+        payload: Optional[ApproveRequest] = None,
+        flag: Optional[str] = Query(None, alias="flag_name"),
+    ) -> Dict[str, Any]:
+        target_flag = (payload.flag_name if payload and payload.flag_name else None) or flag or engine.config.flag_name
+        sm = engine.state_machines.get(target_flag)
+        if not sm:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Unknown flag '{target_flag}'",
+            )
+
+        current_state = sm.current_state
         if current_state != RolloutState.AWAITING_APPROVAL.value:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot approve rollout: Current state is '{current_state}', expected '{RolloutState.AWAITING_APPROVAL.value}'",
+                detail=f"Cannot approve rollout for '{target_flag}': Current state is '{current_state}', expected '{RolloutState.AWAITING_APPROVAL.value}'",
             )
 
         try:
-            entry = engine.approve()
+            entry = engine.approve(flag_name=target_flag)
             return {
                 "status": "success",
-                "message": "Promotion approved successfully",
-                "current_state": engine.current_state,
-                "current_percentage": engine.current_percentage,
+                "message": f"Promotion approved successfully for '{target_flag}'",
+                "flag_name": target_flag,
+                "current_state": sm.current_state,
+                "current_percentage": sm.current_percentage,
                 "audit_entry": entry.to_dict(),
             }
         except ValueError as e:
@@ -95,24 +118,40 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     @app.post("/rollback", dependencies=[Depends(verify_write_token)])
-    def manual_rollback(payload: Optional[RollbackRequest] = None) -> Dict[str, Any]:
-        reason = payload.reason if payload else "Manual operator rollback"
-        entry = engine.manual_rollback(reason=reason)
+    def manual_rollback(
+        payload: Optional[RollbackRequest] = None,
+        flag: Optional[str] = Query(None, alias="flag_name"),
+    ) -> Dict[str, Any]:
+        target_flag = (payload.flag_name if payload and payload.flag_name else None) or flag or engine.config.flag_name
+        sm = engine.state_machines.get(target_flag)
+        if not sm:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Unknown flag '{target_flag}'",
+            )
+        reason = payload.reason if payload and payload.reason else "Manual operator rollback"
+        entry = engine.manual_rollback(flag_name=target_flag, reason=reason)
         return {
             "status": "rolled_back",
-            "message": "Rollback executed",
-            "current_state": engine.current_state,
-            "current_percentage": engine.current_percentage,
+            "message": f"Rollback executed for '{target_flag}'",
+            "flag_name": target_flag,
+            "current_state": sm.current_state,
+            "current_percentage": sm.current_percentage,
             "audit_entry": entry.to_dict(),
         }
 
     @app.post("/reset", dependencies=[Depends(verify_write_token)])
-    def reset_rollout() -> Dict[str, Any]:
+    def reset_rollout(
+        payload: Optional[ResetRequest] = None,
+        flag: Optional[str] = Query(None, alias="flag_name"),
+    ) -> Dict[str, Any]:
+        target_flag = (payload.flag_name if payload and payload.flag_name else None) or flag
         try:
-            entry = engine.reset()
+            entry = engine.reset(flag_name=target_flag)
             return {
                 "status": "reset",
-                "message": "Rollout reset to PENDING",
+                "message": f"Rollout reset to PENDING{' for ' + target_flag if target_flag else ''}",
+                "flag_name": target_flag or engine.config.flag_name,
                 "current_state": engine.current_state,
                 "current_percentage": engine.current_percentage,
                 "audit_entry": entry.to_dict(),
@@ -123,8 +162,8 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     @app.post("/tick", dependencies=[Depends(verify_write_token)])
-    def trigger_tick() -> Dict[str, Any]:
-        entry = engine.tick()
+    def trigger_tick(flag: Optional[str] = Query(None, alias="flag_name")) -> Dict[str, Any]:
+        entry = engine.tick(flag_name=flag)
         return {
             "status": "ok",
             "current_state": engine.current_state,

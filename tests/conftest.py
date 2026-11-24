@@ -53,3 +53,11 @@ class FakeFlagsmithClient:
 @pytest.fixture
 def fake_flagsmith():
     return FakeFlagsmithClient()
+
+
+@pytest.fixture(autouse=True)
+def isolate_guardian_db(tmp_path, monkeypatch):
+    """Ensure each unit test runs with an isolated, clean SQLite database."""
+    test_db = tmp_path / "test_guardian.db"
+    monkeypatch.setenv("GUARDIAN_DB_PATH", str(test_db))
+    yield test_db

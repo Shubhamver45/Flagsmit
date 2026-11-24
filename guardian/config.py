@@ -1,11 +1,13 @@
 """
 Guardian Configuration Schema and YAML Loader.
+Supports single rollout or multiple rollouts at once.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+import os
 import yaml
 
 
@@ -68,8 +70,75 @@ class RolloutConfig:
         if self.soak_time_seconds < 0:
             raise ValueError("soak_time_seconds must be non-negative")
 
+    @property
+    def rollouts(self) -> List[RolloutConfig]:
+        return [self]
 
-def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
+    @property
+    def primary_rollout(self) -> RolloutConfig:
+        return self
+
+
+@dataclass(frozen=True)
+class GuardianConfig:
+    rollouts: List[RolloutConfig] = field(default_factory=list)
+    db_path: str = "./data/guardian.db"
+
+    @property
+    def primary_rollout(self) -> RolloutConfig:
+        if not self.rollouts:
+            raise ValueError("No rollouts configured in GuardianConfig")
+        return self.rollouts[0]
+
+    def get_rollout(self, flag_name: str) -> Optional[RolloutConfig]:
+        for r in self.rollouts:
+            if r.flag_name == flag_name:
+                return r
+        return None
+
+    # Forward common RolloutConfig attributes to primary_rollout for backwards compatibility
+    @property
+    def flag_name(self) -> str:
+        return self.primary_rollout.flag_name
+
+    @property
+    def stages(self) -> List[int]:
+        return self.primary_rollout.stages
+
+    @property
+    def soak_time_seconds(self) -> int:
+        return self.primary_rollout.soak_time_seconds
+
+    @property
+    def require_approval_before_final(self) -> bool:
+        return self.primary_rollout.require_approval_before_final
+
+    @property
+    def guardrails(self) -> List[Guardrail]:
+        return self.primary_rollout.guardrails
+
+    @property
+    def project_id(self) -> Optional[int]:
+        return self.primary_rollout.project_id
+
+    @property
+    def environment_id(self) -> Optional[int]:
+        return self.primary_rollout.environment_id
+
+    @property
+    def environment_key(self) -> str:
+        return self.primary_rollout.environment_key
+
+    @property
+    def slack_webhook_url(self) -> Optional[str]:
+        return self.primary_rollout.slack_webhook_url
+
+    @property
+    def generic_webhook_url(self) -> Optional[str]:
+        return self.primary_rollout.generic_webhook_url
+
+
+def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
     raw_guardrails = data.get("guardrails", [])
     guardrails = [
         Guardrail(
@@ -102,8 +171,19 @@ def load_config_from_dict(data: Dict[str, Any]) -> RolloutConfig:
     )
 
 
-def load_config(file_path: str | Path = "config.yaml") -> RolloutConfig:
-    import os
+def load_config_from_dict(data: Dict[str, Any]) -> Union[RolloutConfig, GuardianConfig]:
+    db_path = data.get("db_path", os.environ.get("GUARDIAN_DB_PATH", "./data/guardian.db"))
+
+    if "rollouts" in data or "flags" in data:
+        items = data.get("rollouts") or data.get("flags") or []
+        rollouts = [_parse_single_rollout(item) for item in items]
+        return GuardianConfig(rollouts=rollouts, db_path=db_path)
+
+    single = _parse_single_rollout(data)
+    return single
+
+
+def load_config(file_path: str | Path = "config.yaml") -> Union[RolloutConfig, GuardianConfig]:
     p = Path(file_path)
     if not p.exists() and str(file_path) == "config.yaml":
         if Path("config.demo.yaml").exists():
@@ -153,6 +233,4 @@ def load_config(file_path: str | Path = "config.yaml") -> RolloutConfig:
         require_approval_before_final=approval,
         guardrails=guardrails,
         environment_key=env_key,
-        slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL"),
-        generic_webhook_url=os.environ.get("GENERIC_WEBHOOK_URL"),
     )

@@ -1,22 +1,29 @@
 """
 Idempotency and State Persistence Tracker for Guardian Actions.
-Prevents duplicate actions, double-firing of webhooks, or redundant rollbacks across ticks and restarts.
+Uses SQLite persistence (via GuardianStorage) to prevent duplicate actions,
+double-firing of webhooks, or redundant rollbacks across ticks and restarts.
 """
 
 from __future__ import annotations
-import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Optional
+
+from guardian.storage import GuardianStorage
 
 logger = logging.getLogger(__name__)
 
 
 class IdempotencyManager:
-    def __init__(self, persistence_file: Optional[Path | str] = None):
-        self._executed_actions: Set[str] = set()
-        self._persistence_file = Path(persistence_file) if persistence_file else None
-        self._load()
+    def __init__(
+        self,
+        storage: Optional[GuardianStorage] = None,
+        persistence_file: Optional[Path | str] = None,  # retained for backwards compatibility
+    ):
+        if storage is not None:
+            self.storage = storage
+        else:
+            self.storage = GuardianStorage(db_path=persistence_file if persistence_file else None)
 
     def _generate_key(
         self,
@@ -42,8 +49,8 @@ class IdempotencyManager:
             return True
 
         key = self._generate_key(flag_name, decision, to_state, stage_index)
-        if key in self._executed_actions:
-            logger.info(f"Idempotency: Skipping duplicate action '{key}' (already executed)")
+        if self.storage.is_action_executed(key):
+            logger.info(f"Idempotency: Skipping duplicate action '{key}' (already executed in SQLite)")
             return False
 
         return True
@@ -59,8 +66,13 @@ class IdempotencyManager:
             return
 
         key = self._generate_key(flag_name, decision, to_state, stage_index)
-        self._executed_actions.add(key)
-        self._save()
+        self.storage.mark_action_executed(
+            action_key=key,
+            flag_name=flag_name,
+            decision=decision,
+            to_state=to_state,
+            stage_index=stage_index,
+        )
 
     def is_executed(
         self,
@@ -70,30 +82,7 @@ class IdempotencyManager:
         stage_index: int,
     ) -> bool:
         key = self._generate_key(flag_name, decision, to_state, stage_index)
-        return key in self._executed_actions
+        return self.storage.is_action_executed(key)
 
-    def reset(self) -> None:
-        self._executed_actions.clear()
-        if self._persistence_file and self._persistence_file.exists():
-            try:
-                self._persistence_file.unlink()
-            except Exception as e:
-                logger.warning(f"Could not remove idempotency file: {e}")
-
-    def _load(self) -> None:
-        if self._persistence_file and self._persistence_file.exists():
-            try:
-                with open(self._persistence_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self._executed_actions = set(data.get("executed_actions", []))
-            except Exception as e:
-                logger.warning(f"Could not load idempotency file: {e}")
-
-    def _save(self) -> None:
-        if self._persistence_file:
-            try:
-                self._persistence_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(self._persistence_file, "w", encoding="utf-8") as f:
-                    json.dump({"executed_actions": list(self._executed_actions)}, f, indent=2)
-            except Exception as e:
-                logger.warning(f"Could not save idempotency file: {e}")
+    def reset(self, flag_name: Optional[str] = None) -> None:
+        self.storage.clear_idempotency(flag_name=flag_name)

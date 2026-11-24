@@ -2,40 +2,71 @@
 Guardian Orchestration Engine.
 Coordinates config, state machine, Flagsmith client, guardrail metric evaluations,
 audit logging, alert dispatching, and idempotent execution.
+Supports multiple rollouts simultaneously, SQLite persistence across restarts,
+and automatic startup reconciliation with drift detection.
 """
 
 from __future__ import annotations
+import logging
 import os
+import time
 from typing import Any, Callable, Dict, List, Optional, Union
-from guardian.config import RolloutConfig
+
+from guardian.config import GuardianConfig, RolloutConfig
 from guardian.flagsmith_client import FlagsmithClientProtocol
 from guardian.state_machine import RolloutDecision, RolloutState, RolloutStateMachine
 from guardian.audit_log import AuditEntry, AuditLogger
 from guardian.actions.alerts import AlertDispatcher
 from guardian.actions.idempotency import IdempotencyManager
+from guardian.storage import GuardianStorage
+
+logger = logging.getLogger(__name__)
 
 
 class GuardianEngine:
     def __init__(
         self,
-        config: RolloutConfig,
+        config: Union[RolloutConfig, GuardianConfig],
         flagsmith_client: FlagsmithClientProtocol,
         audit_logger: Optional[AuditLogger] = None,
         metric_provider: Optional[Any] = None,
         alert_dispatcher: Optional[AlertDispatcher] = None,
         idempotency_manager: Optional[IdempotencyManager] = None,
+        storage: Optional[GuardianStorage] = None,
+        skip_startup_reconciliation: bool = False,
     ):
-        self.config = config
+        self.raw_config = config
+        self.storage = storage or GuardianStorage()
         self.flagsmith_client = flagsmith_client
-        self.audit_logger = audit_logger or AuditLogger()
+
+        # Build rollout configs map
+        self.rollout_configs: Dict[str, RolloutConfig] = {
+            rc.flag_name: rc for rc in config.rollouts
+        }
+        self.state_machines: Dict[str, RolloutStateMachine] = {
+            rc.flag_name: RolloutStateMachine(rc) for rc in config.rollouts
+        }
+        self.drift_flags: Dict[str, Dict[str, Any]] = {
+            flag_name: {"detected": False} for flag_name in self.rollout_configs
+        }
+        self.latest_evaluations: Dict[str, List[Any]] = {
+            flag_name: [] for flag_name in self.rollout_configs
+        }
+
+        # Backwards compatibility accessors for primary rollout
+        self.config: RolloutConfig = getattr(config, "primary_rollout", config.rollouts[0])
+        self.state_machine: RolloutStateMachine = self.state_machines[self.config.flag_name]
+
+        self.audit_logger = audit_logger or AuditLogger(storage=self.storage)
         self.metric_provider = metric_provider or (lambda: {})
         self.alert_dispatcher = alert_dispatcher or AlertDispatcher(
-            slack_webhook_url=config.slack_webhook_url,
-            generic_webhook_url=config.generic_webhook_url,
+            slack_webhook_url=self.config.slack_webhook_url,
+            generic_webhook_url=self.config.generic_webhook_url,
         )
-        self.idempotency_manager = idempotency_manager or IdempotencyManager()
-        self.state_machine = RolloutStateMachine(config)
-        self.latest_evaluations: List[Any] = []
+        self.idempotency_manager = idempotency_manager or IdempotencyManager(storage=self.storage)
+
+        if not skip_startup_reconciliation:
+            self.reconcile_on_startup()
 
     @property
     def current_state(self) -> str:
@@ -45,22 +76,150 @@ class GuardianEngine:
     def current_percentage(self) -> float:
         return self.state_machine.current_percentage
 
+    # -------------------------------------------------------------------------
+    # Startup Reconciliation & Drift Detection
+    # -------------------------------------------------------------------------
+    def reconcile_on_startup(self) -> None:
+        """
+        On startup, reconcile: read the flag's real percentage from Flagsmith
+        and compare it to the stored state. If they differ, hold, log it,
+        and show a DRIFT warning on the status page instead of acting blindly.
+        """
+        for flag_name, rc in self.rollout_configs.items():
+            sm = self.state_machines[flag_name]
+            saved = self.storage.load_rollout_state(flag_name)
+
+            if saved:
+                sm.restore_state(
+                    current_state=saved["current_state"],
+                    current_stage_index=saved["current_stage_index"],
+                    stage_entered_at=saved["stage_entered_at"],
+                    is_approved=saved["is_approved"],
+                )
+                expected_pct = sm.current_percentage
+                stored_state = sm.current_state
+                logger.info(
+                    f"Loaded stored state for '{flag_name}' from SQLite: "
+                    f"state={stored_state}, stage={sm.current_stage_index}, "
+                    f"entered_at={sm.stage_entered_at}, expected_pct={expected_pct}%"
+                )
+            else:
+                expected_pct = 0.0
+                stored_state = RolloutState.PENDING.value
+
+            # Read actual flag percentage from Flagsmith
+            try:
+                real_pct = self.flagsmith_client.get_percentage_rollout(flag_name)
+            except Exception as e:
+                logger.warning(f"Could not read actual Flagsmith rollout percentage for '{flag_name}': {e}")
+                real_pct = expected_pct
+
+            # Compare actual vs stored expected
+            if abs(real_pct - expected_pct) > 0.01:
+                drift_msg = (
+                    f"Flagsmith actual percentage ({real_pct}%) does not match "
+                    f"stored state '{stored_state}' expected percentage ({expected_pct}%)."
+                )
+                logger.warning(f"⚠️  [DRIFT DETECTED] Flag '{flag_name}': {drift_msg} Holding rollout.")
+                drift_info = {
+                    "detected": True,
+                    "actual_percentage": real_pct,
+                    "expected_percentage": expected_pct,
+                    "stored_state": stored_state,
+                    "message": drift_msg,
+                }
+                self.drift_flags[flag_name] = drift_info
+                self.storage.save_rollout_state(
+                    flag_name=flag_name,
+                    current_state=stored_state,
+                    current_stage_index=sm.current_stage_index,
+                    stage_entered_at=sm.stage_entered_at,
+                    current_percentage=expected_pct,
+                    is_approved=sm.is_approved,
+                    drift_detected=True,
+                    drift_details=drift_info,
+                )
+            else:
+                self.drift_flags[flag_name] = {"detected": False}
+                logger.info(
+                    f"✔ Reconciled flag '{flag_name}': Flagsmith actual percentage ({real_pct}%) "
+                    f"matches stored state '{stored_state}' ({expected_pct}%)."
+                )
+                self.storage.save_rollout_state(
+                    flag_name=flag_name,
+                    current_state=sm.current_state,
+                    current_stage_index=sm.current_stage_index,
+                    stage_entered_at=sm.stage_entered_at,
+                    current_percentage=sm.current_percentage,
+                    is_approved=sm.is_approved,
+                    drift_detected=False,
+                    drift_details=None,
+                )
+
+    # -------------------------------------------------------------------------
+    # Evaluation Cycle
+    # -------------------------------------------------------------------------
     def tick(
         self,
+        flag_name: Optional[str] = None,
         metric_values: Optional[Dict[str, float]] = None,
         evaluations: Optional[List[Any]] = None,
         now: Optional[float] = None,
     ) -> AuditEntry:
         """
-        Executes one evaluation cycle:
-        1. Reads metrics via CompositeMetricProvider or callable.
-        2. Steps the state machine.
-        3. Enforces the action on Flagsmith (idempotently).
-        4. Dispatches webhook alerts (idempotently).
-        5. Appends decision and numerical evidence to audit log.
+        Executes evaluation cycle for a specific flag, or all rollouts if flag_name is None.
+        Returns the AuditEntry of the targeted/primary flag.
         """
+        if flag_name is not None:
+            return self._tick_single(
+                flag_name=flag_name,
+                metric_values=metric_values,
+                evaluations=evaluations,
+                now=now,
+            )
+
+        # Tick all rollouts
+        entries: Dict[str, AuditEntry] = {}
+        for fname in self.rollout_configs:
+            entries[fname] = self._tick_single(
+                flag_name=fname,
+                metric_values=metric_values,
+                evaluations=evaluations,
+                now=now,
+            )
+
+        # Return primary flag entry for backwards compatibility
+        return entries[self.config.flag_name]
+
+    def _tick_single(
+        self,
+        flag_name: str,
+        metric_values: Optional[Dict[str, float]] = None,
+        evaluations: Optional[List[Any]] = None,
+        now: Optional[float] = None,
+    ) -> AuditEntry:
+        rc = self.rollout_configs.get(flag_name)
+        if not rc:
+            raise ValueError(f"Unknown flag rollout '{flag_name}'")
+        sm = self.state_machines[flag_name]
+
+        # 1. Check for active drift condition: hold immediately
+        if self.drift_flags.get(flag_name, {}).get("detected"):
+            drift_info = self.drift_flags[flag_name]
+            reason = f"[DRIFT WARNING] Rollout held due to state drift: {drift_info.get('message')}"
+            entry = self.audit_logger.record(
+                flag_name=flag_name,
+                from_state=sm.current_state,
+                to_state=sm.current_state,
+                decision=RolloutDecision.HOLD.value,
+                reason=reason,
+                numbers={"drift": drift_info, "state": sm.current_state},
+            )
+            return entry
+
+        # 2. Gather metrics
         if evaluations is None and hasattr(self.metric_provider, "evaluate_all"):
-            evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
+            evaluations = self.metric_provider.evaluate_all(rc.guardrails)
         elif metric_values is None and callable(self.metric_provider):
             res = self.metric_provider()
             if isinstance(res, list):
@@ -69,47 +228,67 @@ class GuardianEngine:
                 metric_values = res
 
         if evaluations:
-            self.latest_evaluations = evaluations
+            if isinstance(self.latest_evaluations, dict):
+                self.latest_evaluations[flag_name] = evaluations
+            else:
+                self.latest_evaluations = evaluations
+            # If experiment results present, persist to SQLite
+            for ev in evaluations:
+                details = getattr(ev, "details", {}) or {}
+                if "as_of" in details or getattr(ev, "name", "").startswith("checkout_ab"):
+                    self.storage.save_experiment_results(flag_name, details, now=now)
 
-        prev_state = self.state_machine.current_state
-        new_state, decision, reason, numbers = self.state_machine.evaluate(
+        prev_state = sm.current_state
+        new_state, decision, reason, numbers = sm.evaluate(
             metric_values=metric_values,
             evaluations=evaluations,
             now=now,
         )
 
-        # Notify metric providers at the start of a new stage soak window
+        # Notify metric provider when a new stage soak begins
         if new_state != prev_state and hasattr(self.metric_provider, "notify_stage_started"):
             try:
-                self.metric_provider.notify_stage_started(new_state, guardrails=self.config.guardrails)
+                self.metric_provider.notify_stage_started(new_state, guardrails=rc.guardrails)
             except Exception:
                 pass
 
-        stage_idx = self.state_machine.current_stage_index
+        stage_idx = sm.current_stage_index
         should_run = self.idempotency_manager.should_execute(
-            flag_name=self.config.flag_name,
+            flag_name=flag_name,
             decision=decision.value,
             to_state=new_state,
             stage_index=stage_idx,
         )
 
         if should_run:
-            # Apply actions to Flagsmith flag
             if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
-                pct = self.state_machine.current_percentage
-                self.flagsmith_client.set_percentage_rollout(self.config.flag_name, pct)
+                pct = sm.current_percentage
+                self.flagsmith_client.set_percentage_rollout(flag_name, pct)
             elif decision == RolloutDecision.ROLLBACK:
-                self.flagsmith_client.rollback_to_zero(self.config.flag_name, reason=reason)
+                self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
 
             self.idempotency_manager.mark_executed(
-                flag_name=self.config.flag_name,
+                flag_name=flag_name,
                 decision=decision.value,
                 to_state=new_state,
                 stage_index=stage_idx,
             )
 
+        # Persist updated rollout state to SQLite
+        self.storage.save_rollout_state(
+            flag_name=flag_name,
+            current_state=new_state,
+            current_stage_index=sm.current_stage_index,
+            stage_entered_at=sm.stage_entered_at,
+            current_percentage=sm.current_percentage,
+            is_approved=sm.is_approved,
+            drift_detected=False,
+            drift_details=None,
+            now=now,
+        )
+
         entry = self.audit_logger.record(
-            flag_name=self.config.flag_name,
+            flag_name=flag_name,
             from_state=prev_state,
             to_state=new_state,
             decision=decision.value,
@@ -117,30 +296,37 @@ class GuardianEngine:
             numbers=numbers,
         )
 
-        # Dispatch alerts only when action is newly executed (never on duplicate/re-evaluation ticks)
+        # Dispatch alerts on newly executed state changes
         if should_run and decision.value != "HOLD":
             self.alert_dispatcher.dispatch(entry)
 
         return entry
 
-    def check_approval_eligibility(self) -> tuple[bool, Optional[str]]:
-        """
-        Validates whether human approval can proceed before the final 100% promotion.
-        Approval is blocked if:
-        1. Sample Ratio Mismatch (SRM) warning is active (p-value < 0.001).
-        2. Bayesian chance_to_be_worse exceeds the configured limit.
-        3. Any operational guardrail is in a BREACH state.
-        """
-        evaluations = self.latest_evaluations
+    # -------------------------------------------------------------------------
+    # Human Operator Actions
+    # -------------------------------------------------------------------------
+    def check_approval_eligibility(self, flag_name: Optional[str] = None) -> tuple[bool, Optional[str]]:
+        flag_name = flag_name or self.config.flag_name
+        rc = self.rollout_configs.get(flag_name, self.config)
+        if isinstance(self.latest_evaluations, list):
+            evaluations = self.latest_evaluations
+        elif isinstance(self.latest_evaluations, dict):
+            evaluations = self.latest_evaluations.get(flag_name, [])
+        else:
+            evaluations = []
+
         if not evaluations and hasattr(self.metric_provider, "evaluate_all"):
-            evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
-            self.latest_evaluations = evaluations
+            evaluations = self.metric_provider.evaluate_all(rc.guardrails)
+            if isinstance(self.latest_evaluations, dict):
+                self.latest_evaluations[flag_name] = evaluations
+            else:
+                self.latest_evaluations = evaluations
 
         for ev in evaluations:
             details = getattr(ev, "details", {}) or {}
+            status_val = getattr(ev, "status", None)
 
             # 0. Error Check
-            status_val = getattr(ev, "status", None)
             if status_val == "ERROR" or (hasattr(status_val, "value") and status_val.value == "ERROR"):
                 return False, f"Approval blocked: Guardrail '{ev.name}' encountered an error: {getattr(ev, 'reason', '')}"
 
@@ -158,14 +344,13 @@ class GuardianEngine:
             # 3. Bayesian Chance-to-be-Worse Check
             chance_worse = details.get("chance_to_be_worse")
             if chance_worse is None and getattr(ev, "value", None) is not None:
-                # If metric itself is chance_to_be_worse
-                for g in self.config.guardrails:
+                for g in rc.guardrails:
                     if g.name == ev.name and g.metric_source == "flagsmith_experiment":
                         chance_worse = ev.value
                         break
 
             if chance_worse is not None:
-                for g in self.config.guardrails:
+                for g in rc.guardrails:
                     if g.name == ev.name and g.metric_source == "flagsmith_experiment":
                         if chance_worse > g.threshold:
                             return False, f"Approval blocked: Bayesian chance-to-be-worse ({chance_worse:.1f}%) exceeds configured limit ({g.threshold}%)."
@@ -176,49 +361,71 @@ class GuardianEngine:
 
         return True, None
 
-    def approve(self, now: Optional[float] = None) -> AuditEntry:
-        """
-        Operator action: Approve final promotion when in AWAITING_APPROVAL.
-        Strictly blocked if SRM fires or chance_to_be_worse exceeds configured threshold.
-        """
-        if self.state_machine.current_state != RolloutState.AWAITING_APPROVAL.value:
+    def approve(self, flag_name: Optional[str] = None, now: Optional[float] = None) -> AuditEntry:
+        flag_name = flag_name or self.config.flag_name
+        sm = self.state_machines.get(flag_name)
+        if not sm:
+            raise ValueError(f"Unknown flag rollout '{flag_name}'")
+
+        if sm.current_state != RolloutState.AWAITING_APPROVAL.value:
             raise ValueError(
-                f"Cannot approve rollout: Current state is '{self.state_machine.current_state}', "
+                f"Cannot approve rollout for '{flag_name}': Current state is '{sm.current_state}', "
                 f"expected '{RolloutState.AWAITING_APPROVAL.value}'"
             )
 
-        eligible, block_reason = self.check_approval_eligibility()
+        eligible, block_reason = self.check_approval_eligibility(flag_name=flag_name)
         if not eligible:
             raise ValueError(block_reason)
 
-        self.state_machine.approve()
-        return self.tick(now=now)
+        sm.approve()
+        entry = self.tick(flag_name=flag_name, now=now)
+        return entry
 
-    def manual_rollback(self, reason: str = "Manual operator rollback", now: Optional[float] = None) -> AuditEntry:
-        """
-        Operator action: Force instant rollback to 0%.
-        """
-        prev_state = self.state_machine.current_state
-        new_state, decision, dec_reason, numbers = self.state_machine.manual_rollback()
+    def manual_rollback(
+        self,
+        flag_name: Optional[str] = None,
+        reason: str = "Manual operator rollback",
+        now: Optional[float] = None,
+    ) -> AuditEntry:
+        flag_name = flag_name or self.config.flag_name
+        sm = self.state_machines.get(flag_name)
+        rc = self.rollout_configs.get(flag_name, self.config)
+        if not sm:
+            raise ValueError(f"Unknown flag rollout '{flag_name}'")
+
+        prev_state = sm.current_state
+        new_state, decision, dec_reason, numbers = sm.manual_rollback()
 
         should_run = self.idempotency_manager.should_execute(
-            flag_name=self.config.flag_name,
+            flag_name=flag_name,
             decision=decision.value,
             to_state=new_state,
             stage_index=-99,
         )
 
         if should_run:
-            self.flagsmith_client.rollback_to_zero(self.config.flag_name, reason=reason)
+            self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
             self.idempotency_manager.mark_executed(
-                flag_name=self.config.flag_name,
+                flag_name=flag_name,
                 decision=decision.value,
                 to_state=new_state,
                 stage_index=-99,
             )
 
+        self.storage.save_rollout_state(
+            flag_name=flag_name,
+            current_state=new_state,
+            current_stage_index=sm.current_stage_index,
+            stage_entered_at=sm.stage_entered_at,
+            current_percentage=sm.current_percentage,
+            is_approved=sm.is_approved,
+            drift_detected=False,
+            drift_details=None,
+            now=now,
+        )
+
         entry = self.audit_logger.record(
-            flag_name=self.config.flag_name,
+            flag_name=flag_name,
             from_state=prev_state,
             to_state=new_state,
             decision=decision.value,
@@ -231,122 +438,192 @@ class GuardianEngine:
 
         return entry
 
-    def reset(self) -> AuditEntry:
+    def reset(self, flag_name: Optional[str] = None) -> AuditEntry:
         """
-        Resets rollout state back to PENDING (0%) and clears idempotency tracking.
+        Resets rollout state back to PENDING (0%) and clears idempotency tracking in SQLite.
         Rejects re-arm if any guardrail is currently in a BREACH state.
+        Also clears any active drift condition.
         """
-        # Validate that no guardrail is currently in breach
-        if hasattr(self.metric_provider, "evaluate_all"):
-            evaluations = self.metric_provider.evaluate_all(self.config.guardrails)
-            self.latest_evaluations = evaluations
-            for ev in evaluations:
-                if ev.is_breached:
-                    val_str = f"{ev.value:.2f}%" if ev.value is not None else "unknown"
-                    raise ValueError(
-                        f"Cannot re-arm rollout: Guardrail '{ev.name}' is currently breaching "
-                        f"(observed {val_str}). Resolve the underlying fault before re-arming: {ev.reason}"
-                    )
+        target_flags = [flag_name] if flag_name else list(self.rollout_configs.keys())
+        last_entry = None
 
-        prev_state = self.state_machine.current_state
-        self.state_machine = RolloutStateMachine(self.config)
-        self.idempotency_manager.reset()
-        self.flagsmith_client.set_percentage_rollout(self.config.flag_name, 0.0)
-        entry = self.audit_logger.record(
-            flag_name=self.config.flag_name,
-            from_state=prev_state,
-            to_state=self.state_machine.current_state,
-            decision="ADVANCE",
-            reason="Rollout state reset to initial PENDING by operator.",
-            numbers={"percentage": 0.0},
-        )
-        return entry
+        for fname in target_flags:
+            rc = self.rollout_configs[fname]
+            sm = self.state_machines[fname]
 
-    def get_status(self) -> Dict[str, Any]:
-        guardrail_reports = []
-        if self.latest_evaluations:
-            for ev in self.latest_evaluations:
-                guardrail_reports.append({
-                    "name": ev.name,
-                    "value": ev.value,
-                    "sample_size": ev.sample_size,
-                    "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
-                    "is_breached": getattr(ev, "is_breached", False),
-                    "reason": getattr(ev, "reason", ""),
-                    "details": getattr(ev, "details", {}),
-                })
-        else:
-            for g in self.config.guardrails:
-                guardrail_reports.append({
-                    "name": g.name,
-                    "threshold": g.threshold,
-                    "comparison": g.comparison,
-                    "metric_source": g.metric_source,
-                    "status": "WAITING_FIRST_TICK",
-                    "value": None,
-                    "sample_size": None,
-                    "is_breached": False,
-                    "reason": "Awaiting initial metric evaluation",
-                })
+            # Validate guardrails are not breaching before re-arming
+            if hasattr(self.metric_provider, "evaluate_all"):
+                evaluations = self.metric_provider.evaluate_all(rc.guardrails)
+                self.latest_evaluations[fname] = evaluations
+                for ev in evaluations:
+                    if ev.is_breached:
+                        val_str = f"{ev.value:.2f}%" if ev.value is not None else "unknown"
+                        raise ValueError(
+                            f"Cannot re-arm rollout: Guardrail '{ev.name}' is currently breaching "
+                            f"(observed {val_str}). Resolve the underlying fault before re-arming: {ev.reason}"
+                        )
 
-        import time
-        now = time.time()
-        soak_elapsed = 0.0
-        if self.state_machine.stage_entered_at:
-            soak_elapsed = max(0.0, round(now - self.state_machine.stage_entered_at, 1))
+            prev_state = sm.current_state
+            sm = RolloutStateMachine(rc)
+            self.state_machines[fname] = sm
+            if fname == self.config.flag_name:
+                self.state_machine = sm
 
-        # Build experiment results summary if present in guardrails
-        experiment_summary = None
-        for ev in (self.latest_evaluations or []):
-            details = getattr(ev, "details", {}) or {}
-            is_exp = (
-                "as_of" in details
-                or getattr(ev, "name", "").startswith("checkout_ab")
-                or any(g.name == ev.name and g.metric_source == "flagsmith_experiment" for g in self.config.guardrails)
+            self.idempotency_manager.reset(flag_name=fname)
+            self.drift_flags[fname] = {"detected": False}
+
+            try:
+                self.flagsmith_client.set_percentage_rollout(fname, 0.0)
+            except Exception as e:
+                logger.warning(f"Could not reset Flagsmith rollout percentage for '{fname}': {e}")
+
+            self.storage.save_rollout_state(
+                flag_name=fname,
+                current_state=sm.current_state,
+                current_stage_index=sm.current_stage_index,
+                stage_entered_at=sm.stage_entered_at,
+                current_percentage=sm.current_percentage,
+                is_approved=sm.is_approved,
+                drift_detected=False,
+                drift_details=None,
             )
-            if is_exp:
-                srm_val = details.get("srm_p_value")
-                srm_warn = bool(details.get("srm_warning", False) or (srm_val is not None and srm_val < 0.001))
-                chance_worse = details.get("chance_to_be_worse")
-                if chance_worse is None and getattr(ev, "value", None) is not None:
-                    chance_worse = ev.value
 
-                eligible, block_reason = self.check_approval_eligibility()
-                experiment_summary = {
-                    "name": "Checkout A/B Experiment",
-                    "as_of": details.get("as_of"),
-                    "is_collecting_data": details.get("is_collecting_data", False),
-                    "chance_to_be_worse": chance_worse,
-                    "chance_to_win": details.get("chance_to_win"),
-                    "lift": details.get("lift"),
-                    "ci_low": details.get("ci_low"),
-                    "ci_high": details.get("ci_high"),
-                    "total_samples": details.get("total_samples", ev.sample_size),
-                    "control_n": details.get("control_n"),
-                    "variation_n": details.get("variation_n"),
-                    "control_conversions": details.get("control_conversions"),
-                    "variation_conversions": details.get("variation_conversions"),
-                    "srm_p_value": srm_val,
-                    "srm_warning": srm_warn,
-                    "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
-                    "is_eligible_for_approval": eligible,
-                    "block_reason": block_reason,
-                    "demo_shortcut": bool(details.get("demo_shortcut", False) or os.environ.get("DEMO_FORCE_RECALC", "").lower() in ("1", "true", "yes")),
-                }
-                break
+            last_entry = self.audit_logger.record(
+                flag_name=fname,
+                from_state=prev_state,
+                to_state=sm.current_state,
+                decision="ADVANCE",
+                reason=f"Rollout '{fname}' reset to initial PENDING by operator.",
+                numbers={"percentage": 0.0},
+            )
 
+        return last_entry or self.audit_logger.get_latest()
+
+    # -------------------------------------------------------------------------
+    # Status Reporting
+    # -------------------------------------------------------------------------
+    def get_status(self, flag_name: Optional[str] = None) -> Dict[str, Any]:
+        now = time.time()
+        rollouts_report: Dict[str, Any] = {}
+
+        for fname, rc in self.rollout_configs.items():
+            sm = self.state_machines[fname]
+            if isinstance(self.latest_evaluations, list):
+                evals = self.latest_evaluations
+            elif isinstance(self.latest_evaluations, dict):
+                evals = self.latest_evaluations.get(fname, [])
+            else:
+                evals = []
+            guardrail_reports = []
+            if evals:
+                for ev in evals:
+                    guardrail_reports.append({
+                        "name": ev.name,
+                        "value": ev.value,
+                        "sample_size": ev.sample_size,
+                        "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
+                        "is_breached": getattr(ev, "is_breached", False),
+                        "reason": getattr(ev, "reason", ""),
+                        "details": getattr(ev, "details", {}),
+                    })
+            else:
+                for g in rc.guardrails:
+                    guardrail_reports.append({
+                        "name": g.name,
+                        "threshold": g.threshold,
+                        "comparison": g.comparison,
+                        "metric_source": g.metric_source,
+                        "status": "WAITING_FIRST_TICK",
+                        "value": None,
+                        "sample_size": None,
+                        "is_breached": False,
+                        "reason": "Awaiting initial metric evaluation",
+                    })
+
+            soak_elapsed = 0.0
+            if sm.stage_entered_at:
+                soak_elapsed = max(0.0, round(now - sm.stage_entered_at, 1))
+
+            # Build experiment results summary if present
+            experiment_summary = None
+            # Check latest evaluations or load last experiment results from SQLite
+            saved_exp = self.storage.load_experiment_results(fname)
+            for ev in evals:
+                details = getattr(ev, "details", {}) or {}
+                is_exp = (
+                    "as_of" in details
+                    or getattr(ev, "name", "").startswith("checkout_ab")
+                    or any(g.name == ev.name and g.metric_source == "flagsmith_experiment" for g in rc.guardrails)
+                )
+                if is_exp:
+                    srm_val = details.get("srm_p_value")
+                    srm_warn = bool(details.get("srm_warning", False) or (srm_val is not None and srm_val < 0.001))
+                    chance_worse = details.get("chance_to_be_worse")
+                    if chance_worse is None and getattr(ev, "value", None) is not None:
+                        chance_worse = ev.value
+
+                    eligible, block_reason = self.check_approval_eligibility(flag_name=fname)
+                    experiment_summary = {
+                        "name": "Checkout A/B Experiment",
+                        "as_of": details.get("as_of"),
+                        "is_collecting_data": details.get("is_collecting_data", False),
+                        "chance_to_be_worse": chance_worse,
+                        "chance_to_win": details.get("chance_to_win"),
+                        "lift": details.get("lift"),
+                        "ci_low": details.get("ci_low"),
+                        "ci_high": details.get("ci_high"),
+                        "total_samples": details.get("total_samples", ev.sample_size),
+                        "control_n": details.get("control_n"),
+                        "variation_n": details.get("variation_n"),
+                        "control_conversions": details.get("control_conversions"),
+                        "variation_conversions": details.get("variation_conversions"),
+                        "srm_p_value": srm_val,
+                        "srm_warning": srm_warn,
+                        "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
+                        "is_eligible_for_approval": eligible,
+                        "block_reason": block_reason,
+                        "demo_shortcut": bool(details.get("demo_shortcut", False) or os.environ.get("DEMO_FORCE_RECALC", "").lower() in ("1", "true", "yes")),
+                    }
+                    break
+
+            if not experiment_summary and saved_exp:
+                experiment_summary = saved_exp
+
+            rollout_data = {
+                "flag_name": fname,
+                "state": sm.current_state,
+                "percentage": sm.current_percentage,
+                "stage_index": sm.current_stage_index,
+                "is_approved": sm.is_approved,
+                "stages": rc.stages,
+                "soak_time_seconds": rc.soak_time_seconds,
+                "soak_elapsed_seconds": soak_elapsed,
+                "drift": self.drift_flags.get(fname, {"detected": False}),
+                "guardrails": guardrail_reports,
+                "experiment": experiment_summary,
+            }
+            rollouts_report[fname] = rollout_data
+
+        target_flag = flag_name or self.config.flag_name
+        primary_report = rollouts_report.get(target_flag, rollouts_report[self.config.flag_name])
+
+        timeline_entries = self.storage.get_audit_entries(limit=50)
+
+        # Build combined response
         return {
-            "flag_name": self.config.flag_name,
-            "state": self.state_machine.current_state,
-            "percentage": self.state_machine.current_percentage,
-            "stage_index": self.state_machine.current_stage_index,
-            "is_approved": self.state_machine.is_approved,
-            "stages": self.config.stages,
-            "soak_time_seconds": self.config.soak_time_seconds,
-            "soak_elapsed_seconds": soak_elapsed,
+            "rollouts": rollouts_report,
+            "flag_name": primary_report["flag_name"],
+            "state": primary_report["state"],
+            "percentage": primary_report["percentage"],
+            "stage_index": primary_report["stage_index"],
+            "is_approved": primary_report["is_approved"],
+            "stages": primary_report["stages"],
+            "soak_time_seconds": primary_report["soak_time_seconds"],
+            "soak_elapsed_seconds": primary_report["soak_elapsed_seconds"],
+            "drift": primary_report["drift"],
             "slack_webhook_configured": bool(self.alert_dispatcher.slack_webhook_url),
-            "guardrails": guardrail_reports,
-            "experiment": experiment_summary,
-            "timeline": [e.to_dict() for e in reversed(self.audit_logger.entries)],
-            "recent_audit_entries": [e.to_dict() for e in self.audit_logger.entries[-5:]],
+            "guardrails": primary_report["guardrails"],
+            "experiment": primary_report["experiment"],
+            "timeline": timeline_entries,
+            "recent_audit_entries": timeline_entries[:5],
         }

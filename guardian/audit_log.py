@@ -1,6 +1,7 @@
 """
 Guardian Append-Only Audit Logger.
 Every decision (advance, hold, rollback, approve) is recorded with reasons and numerical values.
+Persists records in SQLite (via GuardianStorage) and optionally JSONL for backwards compatibility.
 """
 
 from __future__ import annotations
@@ -8,7 +9,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
+
+from guardian.storage import GuardianStorage
 
 
 @dataclass(frozen=True)
@@ -26,9 +29,29 @@ class AuditEntry:
 
 
 class AuditLogger:
-    def __init__(self, log_file: Optional[Path | str] = None):
+    def __init__(
+        self,
+        log_file: Optional[Path | str] = None,
+        storage: Optional[GuardianStorage] = None,
+    ):
         self._entries: List[AuditEntry] = []
         self._log_file = Path(log_file) if log_file else None
+        self.storage = storage
+
+        # If storage is provided, pre-load recent historical entries
+        if self.storage:
+            recent = self.storage.get_audit_entries(limit=100)
+            for r in reversed(recent):
+                self._entries.append(AuditEntry(
+                    timestamp=r["timestamp"],
+                    flag_name=r["flag_name"],
+                    from_state=r["from_state"],
+                    to_state=r["to_state"],
+                    decision=r["decision"],
+                    reason=r["reason"],
+                    numbers=r["numbers"],
+                ))
+
         if self._log_file:
             self._log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -41,8 +64,9 @@ class AuditLogger:
         reason: str,
         numbers: Dict[str, Any],
     ) -> AuditEntry:
+        timestamp = datetime.now(timezone.utc).isoformat()
         entry = AuditEntry(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=timestamp,
             flag_name=flag_name,
             from_state=from_state,
             to_state=to_state,
@@ -51,6 +75,17 @@ class AuditLogger:
             numbers=numbers,
         )
         self._entries.append(entry)
+
+        if self.storage:
+            self.storage.record_audit(
+                timestamp=timestamp,
+                flag_name=flag_name,
+                from_state=from_state,
+                to_state=to_state,
+                decision=decision,
+                reason=reason,
+                numbers=numbers,
+            )
 
         if self._log_file:
             with open(self._log_file, "a", encoding="utf-8") as f:

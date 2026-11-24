@@ -1,43 +1,51 @@
 """
-Guardian Status Page HTML Generator.
-Provides a clean, self-contained, real-time dashboard served directly by Guardian.
+Interactive Real-Time Guardian Status Page HTML.
+Serves a self-contained single-page dashboard displaying:
+- Multi-rollout support (one card per configured flag)
+- Active rollout state, percentage, soak countdown, and visual stage stepper
+- Startup reconciliation status and high-visibility DRIFT WARNING alerts
+- Guardrail metrics with real-time values, thresholds, and health status
+- Flagsmith experimentation results card (provenance line, Bayesian lift, chance-to-be-worse, SRM p-value)
+- Live decision timeline and audit trail with numerical evidence
+- Operator action controls (Approve, Rollback, Reset, Tick)
 """
-
-from __future__ import annotations
-
 
 STATUS_PAGE_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Guardian 🛡️ | Flagsmith Guarded Rollouts</title>
+  <title>Guardian 🛡️ | Automated Guarded Rollouts</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0b0f19;
+      --bg-dark: #0b0f19;
       --card-bg: #111827;
       --card-border: #1f2937;
-      --text: #f9fafb;
+      --text-main: #f9fafb;
       --text-muted: #9ca3af;
-      --accent: #6366f1;
-      --accent-hover: #4f46e5;
-      --success: #10b981;
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --info: #3b82f6;
+      --accent-primary: #6366f1;
+      --accent-success: #10b981;
+      --accent-warning: #f59e0b;
+      --accent-danger: #ef4444;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
     }
+    
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-sans);
       line-height: 1.5;
       padding: 24px;
+      -webkit-font-smoothing: antialiased;
     }
+    
     .container { max-width: 1200px; margin: 0 auto; }
+    
     header {
       display: flex;
       justify-content: space-between;
@@ -46,34 +54,35 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       padding-bottom: 16px;
       border-bottom: 1px solid var(--card-border);
     }
-    .logo { display: flex; align-items: center; gap: 12px; }
-    .logo h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
     .logo span {
       background: rgba(99, 102, 241, 0.15);
       color: #818cf8;
-      font-size: 12px;
-      padding: 3px 8px;
-      border-radius: 9999px;
+      font-size: 11px;
       font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
       border: 1px solid rgba(99, 102, 241, 0.3);
     }
     .refresh-badge {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       font-size: 12px;
       color: var(--text-muted);
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      padding: 6px 12px;
-      border-radius: 8px;
     }
     .pulse-dot {
       width: 8px;
       height: 8px;
-      background: var(--success);
+      background-color: var(--accent-success);
       border-radius: 50%;
-      animation: pulse 2s infinite;
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+      animation: pulse 2s infinite cubic-bezier(0.66, 0, 0, 1);
     }
     @keyframes pulse {
       0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
@@ -161,75 +170,84 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       transition: all 0.3s ease;
     }
     .step-item.active .step-circle {
-      border-color: var(--accent);
-      background: var(--accent);
-      color: #fff;
+      border-color: var(--accent-primary);
+      background: var(--accent-primary);
+      color: white;
       box-shadow: 0 0 12px rgba(99, 102, 241, 0.5);
     }
     .step-item.completed .step-circle {
-      border-color: var(--success);
-      background: var(--success);
-      color: #fff;
+      border-color: var(--accent-success);
+      background: var(--accent-success);
+      color: white;
     }
     .step-item.rollback .step-circle {
-      border-color: var(--danger);
-      background: var(--danger);
-      color: #fff;
+      border-color: var(--accent-danger);
+      background: var(--accent-danger);
+      color: white;
     }
-    .step-label { font-size: 12px; font-weight: 500; color: var(--text-muted); }
-    .step-item.active .step-label { color: var(--text); font-weight: 600; }
-
-    /* Controls */
+    .step-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+    .step-item.active .step-label { color: var(--text-main); font-weight: 600; }
+    
+    /* Actions Panel */
     .actions-panel {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      justify-content: center;
+      gap: 10px;
+      margin-top: 12px;
     }
     button {
-      cursor: pointer;
-      font-family: inherit;
-      font-size: 14px;
+      font-family: var(--font-sans);
+      font-size: 13px;
       font-weight: 600;
       padding: 10px 16px;
       border-radius: 8px;
-      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: all 0.2s ease;
+      border: 1px solid transparent;
     }
     .btn-approve {
-      background: var(--success);
-      color: white;
+      background: rgba(16, 185, 129, 0.15);
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #34d399;
     }
     .btn-approve:hover:not(:disabled) {
-      background: #059669;
-    }
-    .btn-approve:disabled {
-      background: #1f2937;
-      color: #4b5563;
-      cursor: not-allowed;
-      border: 1px solid #374151;
+      background: #10b981;
+      color: white;
+      border-color: #10b981;
     }
     .btn-rollback {
       background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
       color: #f87171;
-      border: 1px solid rgba(239, 68, 68, 0.3);
     }
-    .btn-rollback:hover {
-      background: rgba(239, 68, 68, 0.25);
+    .btn-rollback:hover:not(:disabled) {
+      background: #ef4444;
+      color: white;
+      border-color: #ef4444;
     }
     .btn-tick {
       background: rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.4);
       color: #818cf8;
-      border: 1px solid rgba(99, 102, 241, 0.3);
     }
-    .btn-tick:hover {
-      background: rgba(99, 102, 241, 0.25);
+    .btn-tick:hover:not(:disabled) {
+      background: #6366f1;
+      color: white;
+      border-color: #6366f1;
     }
-
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    
     /* Tables */
     table {
       width: 100%;
@@ -297,11 +315,36 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       </div>
     </header>
 
+    <!-- Drift Warning Banner -->
+    <div id="drift-banner" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; color: #fca5a5;">
+      <div style="display: flex; align-items: flex-start; gap: 12px;">
+        <span style="font-size: 22px; line-height: 1;">⚠️</span>
+        <div>
+          <strong style="color: #f87171; font-size: 15px; letter-spacing: 0.5px;">DRIFT WARNING DETECTED</strong>
+          <div id="drift-message" style="margin-top: 4px; color: #fecaca; font-size: 13px;"></div>
+          <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted);">
+            Guardian is safely holding rollout execution to prevent unintended state changes. Verify in Flagsmith or trigger an operator Reset.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Human Approval Banner -->
     <div id="awaiting-banner" class="banner-awaiting" style="display: none;">
       <div>
         <strong>Human Approval Required:</strong> All guardrails satisfied. Ready for final 100% promotion.
       </div>
       <button class="btn-approve" onclick="handleApprove()">Approve 100%</button>
+    </div>
+
+    <!-- Multi-Rollout Overview (if multiple rollouts active) -->
+    <div id="multi-rollout-section" style="display: none; margin-bottom: 24px;">
+      <div class="card">
+        <div class="card-title">All Managed Rollouts</div>
+        <div id="multi-rollout-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 10px;">
+          <!-- Dynamically populated per flag -->
+        </div>
+      </div>
     </div>
 
     <div class="grid">
@@ -414,9 +457,12 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    let activeFlagName = '';
+
     async function fetchStatus() {
       try {
-        const res = await fetch('/status');
+        const url = activeFlagName ? `/status?flag_name=${encodeURIComponent(activeFlagName)}` : '/status';
+        const res = await fetch(url);
         if (!res.ok) return;
         const data = await res.json();
         renderDashboard(data);
@@ -426,12 +472,54 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     }
 
     function renderDashboard(data) {
+      activeFlagName = data.flag_name;
       document.getElementById('state-display').innerText = data.state;
       document.getElementById('pct-display').innerText = data.percentage + '% Allocation';
       document.getElementById('flag-badge').innerText = 'Flagsmith Flag: ' + data.flag_name;
 
+      // Drift Warning Banner
+      const drift = data.drift;
+      const driftBanner = document.getElementById('drift-banner');
+      if (drift && drift.detected) {
+        driftBanner.style.display = 'block';
+        document.getElementById('drift-message').innerText = drift.message || 'Flagsmith actual flag percentage differs from stored state.';
+        document.getElementById('state-display').innerText = 'DRIFT DETECTED';
+        document.getElementById('state-display').style.color = '#ef4444';
+      } else {
+        driftBanner.style.display = 'none';
+      }
+
       if (data.soak_time_seconds) {
         document.getElementById('soak-info').innerText = `Soak: ${data.soak_elapsed_seconds || 0}s / ${data.soak_time_seconds}s`;
+      }
+
+      // Multi-rollout cards
+      const rollouts = data.rollouts || {};
+      const flagKeys = Object.keys(rollouts);
+      const multiSec = document.getElementById('multi-rollout-section');
+      const multiContainer = document.getElementById('multi-rollout-container');
+
+      if (flagKeys.length > 1) {
+        multiSec.style.display = 'block';
+        multiContainer.innerHTML = flagKeys.map(k => {
+          const r = rollouts[k];
+          const isSelected = r.flag_name === data.flag_name;
+          const driftBadge = r.drift && r.drift.detected ? '<span class="status-pill pill-breached">DRIFT</span>' : '';
+          return `
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid ${isSelected ? 'var(--accent-primary)' : 'var(--card-border)'}; border-radius: 8px; padding: 14px; cursor: pointer;" onclick="selectRollout('${r.flag_name}')">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <strong style="color: ${isSelected ? '#818cf8' : 'var(--text-main)'}; font-size: 14px;">${r.flag_name}</strong>
+                ${driftBadge}
+              </div>
+              <div style="display: flex; gap: 8px; align-items: baseline;">
+                <span style="font-size: 18px; font-weight: 700; color: ${r.state === 'PROMOTED' ? '#34d399' : (r.state === 'ROLLED_BACK' ? '#f87171' : '#f9fafb')}">${r.state}</span>
+                <span class="mono" style="font-size: 13px; color: #818cf8;">${r.percentage}%</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } else {
+        multiSec.style.display = 'none';
       }
 
       // Banner & Approve button
@@ -448,7 +536,8 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
       // Color code state badge
       const stateEl = document.getElementById('state-display');
-      if (data.state === 'PROMOTED') stateEl.style.color = '#34d399';
+      if (drift && drift.detected) stateEl.style.color = '#ef4444';
+      else if (data.state === 'PROMOTED') stateEl.style.color = '#34d399';
       else if (data.state === 'ROLLED_BACK') stateEl.style.color = '#f87171';
       else if (data.state === 'AWAITING_APPROVAL') stateEl.style.color = '#fbbf24';
       else stateEl.style.color = '#f9fafb';
@@ -529,6 +618,11 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
       // Timeline
       renderTimeline(data.timeline || data.recent_audit_entries || []);
+    }
+
+    function selectRollout(flagName) {
+      activeFlagName = flagName;
+      fetchStatus();
     }
 
     function renderStepper(data) {
@@ -622,7 +716,11 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         else if (entry.decision === 'PROMOTED') decPill = 'pill-promoted';
         else if (entry.decision === 'AWAIT_APPROVAL') decPill = 'pill-insufficient';
 
-        const timeStr = entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleTimeString() : '--';
+        let timeStr = '--';
+        if (entry.timestamp) {
+          const parsed = Date.parse(entry.timestamp);
+          timeStr = isNaN(parsed) ? String(entry.timestamp) : new Date(parsed).toLocaleTimeString();
+        }
         const transition = `${entry.from_state} ➔ <strong>${entry.to_state}</strong>`;
 
         return `
@@ -648,72 +746,68 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       return headers;
     }
 
-    async function authenticatedFetch(url, options = {}) {
-      options.headers = Object.assign(getAuthHeaders(), options.headers || {});
-      let res = await fetch(url, options);
-      if (res.status === 401) {
-        const token = prompt('API token required for Guardian write actions. Enter token:');
-        if (token) {
-          localStorage.setItem('guardian_token', token.trim());
-          options.headers['Authorization'] = 'Bearer ' + token.trim();
-          res = await fetch(url, options);
-        }
-      }
-      return res;
-    }
-
     async function handleApprove() {
-      if (!confirm('Approve final promotion to 100% rollout?')) return;
       try {
-        const res = await authenticatedFetch('/approve', {
+        const body = activeFlagName ? { flag_name: activeFlagName } : {};
+        const res = await fetch('/approve', {
           method: 'POST',
-          body: JSON.stringify({ approved_by: 'operator_ui', reason: 'Approved from Status Page' })
+          headers: getAuthHeaders(),
+          body: JSON.stringify(body),
         });
-        const data = await res.json();
-        if (!res.ok) alert('Approval failed: ' + (data.detail || JSON.stringify(data)));
-        else fetchStatus();
+        const json = await res.json();
+        if (!res.ok) alert('Approval Failed: ' + (json.detail || JSON.stringify(json)));
+        fetchStatus();
       } catch (err) {
-        alert('Network error: ' + err);
+        alert('Approval Request Error: ' + err);
       }
     }
 
     async function handleRollback() {
-      const reason = prompt('Enter rollback reason:', 'Manual rollback from Status Page');
-      if (reason === null) return;
+      if (!confirm(`Are you sure you want to rollback ${activeFlagName || 'the flag'} to 0%?`)) return;
       try {
-        const res = await authenticatedFetch('/rollback', {
+        const body = { reason: 'Operator initiated rollback via status UI' };
+        if (activeFlagName) body.flag_name = activeFlagName;
+        const res = await fetch('/rollback', {
           method: 'POST',
-          body: JSON.stringify({ reason })
+          headers: getAuthHeaders(),
+          body: JSON.stringify(body),
         });
-        const data = await res.json();
-        if (!res.ok) alert('Rollback failed: ' + (data.detail || JSON.stringify(data)));
-        else fetchStatus();
+        const json = await res.json();
+        if (!res.ok) alert('Rollback Failed: ' + (json.detail || JSON.stringify(json)));
+        fetchStatus();
       } catch (err) {
-        alert('Network error: ' + err);
+        alert('Rollback Request Error: ' + err);
+      }
+    }
+
+    async function handleReset() {
+      if (!confirm(`Are you sure you want to reset ${activeFlagName || 'the rollout'} back to PENDING?`)) return;
+      try {
+        const body = activeFlagName ? { flag_name: activeFlagName } : {};
+        const res = await fetch('/reset', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(body),
+        });
+        const json = await res.json();
+        if (!res.ok) alert('Reset Failed: ' + (json.detail || JSON.stringify(json)));
+        fetchStatus();
+      } catch (err) {
+        alert('Reset Request Error: ' + err);
       }
     }
 
     async function handleTick() {
       try {
-        await authenticatedFetch('/tick', { method: 'POST' });
+        const url = activeFlagName ? `/tick?flag_name=${encodeURIComponent(activeFlagName)}` : '/tick';
+        await fetch(url, { method: 'POST', headers: getAuthHeaders() });
         fetchStatus();
       } catch (err) {
-        console.error(err);
+        console.error('Tick Error:', err);
       }
     }
 
-    async function handleReset() {
-      if (!confirm('Reset rollout back to PENDING (0%) for a fresh demo run?')) return;
-      try {
-        await authenticatedFetch('/reset', { method: 'POST' });
-        try { await fetch('http://localhost:5001/reset-metrics', { method: 'POST' }); } catch (e) {}
-        fetchStatus();
-      } catch (err) {
-        alert('Reset error: ' + err);
-      }
-    }
-
-    // Initial fetch and 2-second interval
+    // Auto-poll status every 2 seconds
     fetchStatus();
     setInterval(fetchStatus, 2000);
   </script>
