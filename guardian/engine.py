@@ -114,8 +114,18 @@ class GuardianEngine:
                 logger.warning(f"Could not read actual Flagsmith rollout percentage for '{flag_name}': {e}")
                 real_pct = expected_pct
 
+            # Check if this is a standard boolean flag (where Flagsmith returns 100.0 for any enabled state)
+            is_standard_flag_match = False
+            if real_pct == 100.0 and expected_pct > 0.0 and hasattr(self.flagsmith_client, "get_environment_feature_state"):
+                try:
+                    fs = self.flagsmith_client.get_environment_feature_state(flag_name)
+                    if isinstance(fs, dict) and not fs.get("multivariate_feature_state_values"):
+                        is_standard_flag_match = True
+                except Exception:
+                    pass
+
             # Compare actual vs stored expected
-            if abs(real_pct - expected_pct) > 0.01:
+            if not is_standard_flag_match and abs(real_pct - expected_pct) > 0.01:
                 drift_msg = (
                     f"Flagsmith actual percentage ({real_pct}%) does not match "
                     f"stored state '{stored_state}' expected percentage ({expected_pct}%)."
