@@ -98,6 +98,15 @@ def checkout():
             exp_flag = flagsmith_client.get_experiment_flag("checkout_experiment", identifier=user_id)
             if exp_flag and (getattr(exp_flag, "variant", None) or exp_flag.value):
                 exp_variant = getattr(exp_flag, "variant", None) or exp_flag.value
+                if getattr(exp_flag, "variant", None) is None and exp_flag.value:
+                    exp_metadata = getattr(exp_flag, "experiment", None)
+                    exp_id = getattr(exp_metadata, "id", None) if exp_metadata else None
+                    flagsmith_client.track_exposure_event(
+                        feature_name="checkout_experiment",
+                        identifier=user_id,
+                        value=exp_flag.value,
+                        metadata={"experiment_id": exp_id} if exp_id else None,
+                    )
     except Exception as e:
         logger.warning(f"Experiment flag evaluation failed for {user_id}: {e}")
 
