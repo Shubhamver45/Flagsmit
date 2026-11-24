@@ -137,10 +137,10 @@ def checkout():
         }), 500
 
     # 3. Normal successful checkout: track 'checkout_completed' conversion event
-    # In healthy A/B test, variation converts at ~98% while control converts at ~45%
+    # In healthy A/B test, variation converts at ~98% while control converts at ~35%
     # demonstrating decisive positive lift and very low chance-to-be-worse (< 5%).
     should_convert = True
-    if exp_variant == "control" and random.random() > 0.45:
+    if exp_variant == "control" and random.random() > 0.35:
         should_convert = False
     elif exp_variant != "control" and random.random() > 0.98:
         should_convert = False

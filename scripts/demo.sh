@@ -265,8 +265,8 @@ fi
 
 echo ""
 echo "--- Phase 3: Clean Balanced Traffic & Human Operator Sign-off ---"
-echo "Generating balanced conversion events (simulated conversion rates: ~65% control, ~95% variation)..."
-PYTHONPATH=. python3 demo/simulator.py --requests 180 --identities 200 > /dev/null
+echo "Generating balanced conversion events (simulated conversion rates: ~35% control, ~98% variation)..."
+PYTHONPATH=. python3 demo/simulator.py --requests 300 --identities 200 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
 
