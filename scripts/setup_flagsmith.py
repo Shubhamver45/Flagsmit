@@ -219,6 +219,14 @@ def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_i
         mv_options = f_detail.get("multivariate_options", [])
     opt_id = mv_options[0]["id"]
 
+    # Flagsmith's nested feature serializer marks 'key' as read-only on feature create.
+    # Set the variant key on the dedicated mv-options endpoint so Flagsmith computes SRM:
+    requests.patch(
+        f"{api_url}/projects/{project_id}/features/{exp_feat['id']}/mv-options/{opt_id}/",
+        headers=headers,
+        json={"key": "variation", "feature": exp_feat["id"], "default_percentage_allocation": 50.0},
+    ).raise_for_status()
+
     # 3. Clean up any existing experiments & metrics for a reproducible fresh run
     exps_resp = requests.get(f"{api_url}/environments/{env_key}/experiments/", headers=headers)
     exps = exps_resp.json().get("results", []) if exps_resp.status_code == 200 else []
