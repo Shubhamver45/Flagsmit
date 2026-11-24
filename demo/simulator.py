@@ -130,12 +130,14 @@ if __name__ == "__main__":
     parser.add_argument("--requests", type=int, default=TOTAL_REQUESTS, help="Total requests for batch simulation")
     parser.add_argument("--identities", type=int, default=NUM_IDENTITIES, help="Number of unique user identities")
     parser.add_argument("--prefix", type=str, default=IDENTITY_PREFIX, help="Prefix for user identities")
+    parser.add_argument("--delay", type=float, default=0.5, help="Delay between batches in seconds")
+    parser.add_argument("--batch", type=int, default=5, help="Batch size per streaming tick")
     args, _ = parser.parse_known_args()
 
     TOTAL_REQUESTS = args.requests
     NUM_IDENTITIES = args.identities
 
     if args.continuous or os.environ.get("CONTINUOUS") == "1":
-        run_continuous()
+        run_continuous(delay=args.delay, batch_size=args.batch)
     else:
         run_simulation(prefix=args.prefix)

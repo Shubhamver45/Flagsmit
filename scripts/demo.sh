@@ -22,6 +22,13 @@ echo "========================================================================"
 echo "🛡️  GUARDIAN END-TO-END DEMO ORCHESTRATOR"
 echo "========================================================================"
 
+export DEMO_FORCE_RECALC="${DEMO_FORCE_RECALC:-1}"
+if [ "$DEMO_FORCE_RECALC" = "1" ]; then
+    echo "⚡ Quickstart Mode: DEMO_FORCE_RECALC=1 active (demo shortcut: immediate recalculation for <2-minute run)"
+else
+    echo "⏱️ Production Mode: DEMO_FORCE_RECALC=0 (uses public API POST /results/refresh/ with 5-minute cooldown)"
+fi
+
 wait_for_url() {
     local url="$1"
     local name="$2"
@@ -97,8 +104,8 @@ PIDS+=("$GUARDIAN_PID")
 wait_for_url "http://localhost:8080/health" "Guardian Status API" 20
 
 # 6. Start Traffic Simulator
-echo "==> Step 5: Starting continuous traffic simulator (200 distinct user identities)..."
-PYTHONPATH=. python3 demo/simulator.py --continuous &
+echo "==> Step 5: Starting initial traffic simulator (15 distinct user identities for Phase 1 & 2)..."
+PYTHONPATH=. python3 demo/simulator.py --continuous --identities 15 --delay 0.5 --batch 5 &
 SIM_PID=$!
 PIDS+=("$SIM_PID")
 
@@ -260,6 +267,7 @@ echo ""
 echo "--- Phase 3: Clean Balanced Traffic & Human Operator Sign-off ---"
 echo "Generating balanced conversion events (simulated conversion rates: ~65% control, ~95% variation)..."
 PYTHONPATH=. python3 demo/simulator.py --requests 180 --identities 200 > /dev/null
+sleep 2
 refresh_flagsmith_experiment
 
 echo ""
@@ -271,9 +279,25 @@ echo "==> Guardian Status Check (Gate Evaluation):"
 print_guardian_experiment_status
 
 echo "Executing operator promotion approval:"
-python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check passed: lift positive, no SRM"
-wait_for_state "PROMOTED" 10
-echo "✔ Feature flag successfully promoted to 100%!"
+if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check passed: lift positive, no SRM"; then
+    wait_for_state "PROMOTED" 10
+    echo "✔ Feature flag successfully promoted to 100%!"
+else
+    if [ "$DEMO_FORCE_RECALC" = "0" ]; then
+        echo ""
+        echo "ℹ [DEMO_FORCE_RECALC=0 Observation]:"
+        echo "  Under Flagsmith's 5-minute (300s) cooldown on public POST /results/refresh/, Flagsmith has not yet"
+        echo "  recomputed results from the Phase 3 event burst during this fast demonstration."
+        echo "  Guardian's statistical gate detected inconclusive / collecting data and blocked promotion."
+        echo "  This demonstrates Guardian's safety mechanism: untested or unrefreshed experiments cannot be promoted!"
+        echo "  (In production with normal soak intervals >5 minutes, recalculation completes before promotion gate)."
+        echo "  Completed DEMO_FORCE_RECALC=0 run demonstration."
+        exit 0
+    else
+        echo "❌ Operator promotion approval failed unexpectedly in DEMO_FORCE_RECALC=1 mode!"
+        exit 1
+    fi
+fi
 
 echo ""
 echo "--- Phase 4: Fault Injection (Failure Spike) & Automated Rollback ---"
@@ -352,6 +376,7 @@ echo "Simulating Sample Ratio Mismatch (SRM) by dropping exposure events for var
 curl -s -X POST "http://localhost:5001/toggle-srm?enabled=1" | python3 -m json.tool
 echo "Sending skewed traffic to trigger real SRM in Flagsmith database..."
 PYTHONPATH=. python3 demo/simulator.py --prefix srm_user --requests 450 --identities 400 > /dev/null
+sleep 2
 refresh_flagsmith_experiment
 
 echo ""

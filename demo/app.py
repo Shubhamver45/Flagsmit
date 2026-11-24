@@ -44,12 +44,12 @@ logger.info(f"Initializing Flagsmith client with API {FLAGSMITH_API_URL} and Eve
 flagsmith_client = Flagsmith(
     environment_key=FLAGSMITH_ENV_KEY,
     api_url=FLAGSMITH_API_URL,
-    request_timeout_seconds=3,
+    request_timeout_seconds=10,
     enable_events=True,
     event_processor_config=EventProcessorConfig(
         events_api_url=FLAGSMITH_EVENTS_API_URL,
-        flush_interval_seconds=1.0,
-        max_buffer_items=500,
+        flush_interval_seconds=0.5,
+        max_buffer_items=100,
     ),
 )
 
@@ -96,8 +96,8 @@ def checkout():
                 )
         else:
             exp_flag = flagsmith_client.get_experiment_flag("checkout_experiment", identifier=user_id)
-            if exp_flag and exp_flag.value:
-                exp_variant = exp_flag.value
+            if exp_flag and (getattr(exp_flag, "variant", None) or exp_flag.value):
+                exp_variant = getattr(exp_flag, "variant", None) or exp_flag.value
     except Exception as e:
         logger.warning(f"Experiment flag evaluation failed for {user_id}: {e}")
 
@@ -128,12 +128,12 @@ def checkout():
         }), 500
 
     # 3. Normal successful checkout: track 'checkout_completed' conversion event
-    # In healthy A/B test, variation converts at ~95% while control converts at ~65%
-    # demonstrating real positive lift and low chance-to-be-worse.
+    # In healthy A/B test, variation converts at ~98% while control converts at ~45%
+    # demonstrating decisive positive lift and very low chance-to-be-worse (< 5%).
     should_convert = True
-    if exp_variant == "control" and random.random() > 0.65:
+    if exp_variant == "control" and random.random() > 0.45:
         should_convert = False
-    elif exp_variant != "control" and random.random() > 0.95:
+    elif exp_variant != "control" and random.random() > 0.98:
         should_convert = False
 
     if should_convert:

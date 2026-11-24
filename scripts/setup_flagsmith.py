@@ -1,8 +1,23 @@
 import os
 import sys
 import time
+import json
+import requests
 
-def setup():
+def setup_django_shell():
+    """
+    Executed ONLY inside Django shell (python manage.py shell).
+    Creates ONLY the core primitives that require direct DB access:
+    1. Admin user
+    2. Organisation
+    3. Project
+    4. Environment
+    5. Master API Key
+    6. Warehouse connection (for SDK event storage)
+    
+    All feature flags, variants, metrics, and experiments are created
+    strictly through the public Admin API as per official documentation.
+    """
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
     admin_password = os.environ.get("ADMIN_PASSWORD", "changeme_flagsmith_admin_pass")
 
@@ -11,7 +26,6 @@ def setup():
     from projects.models import Project
     from environments.models import Environment
     from api_keys.models import MasterAPIKey
-    from features.models import Feature, FeatureState
     from experimentation.models import WarehouseConnection, WarehouseType, WarehouseConnectionStatus
     from experimentation.views import verify_warehouse_connection
 
@@ -56,29 +70,7 @@ def setup():
     )
     print(f"Environment: {env.name} [ID={env.id}, Key={env.api_key}]")
 
-    # 5. Features / Flags
-    feature, feat_created = Feature.objects.get_or_create(
-        project=project,
-        name="new_checkout",
-        defaults={
-            "description": "New checkout flow gated rollout flag",
-            "default_enabled": False,
-            "type": "STANDARD",
-        }
-    )
-    # Ensure default environment feature state exists
-    fs = FeatureState.objects.filter(
-        feature=feature,
-        environment=env,
-        feature_segment__isnull=True,
-        identity__isnull=True,
-    ).first()
-    if not fs:
-        fs = FeatureState.objects.create(feature=feature, environment=env, enabled=False)
-    print(f"Feature: {feature.name} [ID={feature.id}, Enabled={fs.enabled}] (created: {feat_created})")
-
-    # 6. Master Admin API Key
-    # Remove existing Guardian Admin Keys to ensure we generate a fresh, known raw key
+    # 5. Master Admin API Key
     MasterAPIKey.objects.filter(organisation=org, name="Guardian Admin Key").delete()
     key_obj, raw_key = MasterAPIKey.objects.create_key(
         name="Guardian Admin Key",
@@ -88,7 +80,7 @@ def setup():
     print(f"Admin API Key Prefix: {key_obj.prefix}")
     print(f"Admin API Key: {raw_key}")
 
-    # 7. Warehouse Connection (Flagsmith Database for SDK event collection)
+    # 6. Warehouse Connection (Flagsmith Database for SDK event collection)
     wh_conn, created = WarehouseConnection.objects.get_or_create(
         environment=env,
         defaults={
@@ -113,108 +105,11 @@ def setup():
         print(f"ERROR: Warehouse connection is not CONNECTED: {wh_conn.status_detail}", file=sys.stderr)
         sys.exit(1)
 
-    # 8. Experimentation Setup: Feature, Metric, and Experiment (Real Events Only - No Seeded Results)
-    from features.multivariate.models import MultivariateFeatureOption
-    from experimentation.models import (
-        Experiment,
-        Metric,
-        ExperimentMetric,
-        ExpectedDirection,
-        ExperimentStatus,
-    )
-    from experimentation.services import apply_experiment_rollout, transition_experiment_status
-    from experimentation.dataclasses import RolloutSpec, Variant
-    from core.dataclasses import AuthorData
-
-    # A. Multivariate Feature for Experiment (separate from rollout flag 'new_checkout')
-    exp_feature, _ = Feature.objects.get_or_create(
-        project=project,
-        name="checkout_experiment",
-        defaults={
-            "description": "Multivariate feature flag for checkout A/B experiment",
-            "type": "MULTIVARIATE",
-            "default_enabled": True,
-            "initial_value": "control",
-        }
-    )
-    mv_opt, _ = MultivariateFeatureOption.objects.get_or_create(
-        feature=exp_feature,
-        key="variation",
-        defaults={
-            "type": "unicode",
-            "string_value": "variation",
-            "default_percentage_allocation": 50.0,
-        }
-    )
-    mv_opt.key = "variation"
-    mv_opt.default_percentage_allocation = 50.0
-    mv_opt.save()
-
-    fs_exp = FeatureState.objects.filter(
-        feature=exp_feature,
-        environment=env,
-        feature_segment__isnull=True,
-        identity__isnull=True,
-    ).first()
-    if not fs_exp:
-        fs_exp = FeatureState.objects.create(feature=exp_feature, environment=env, enabled=True)
-    mv_fs, _ = fs_exp.multivariate_feature_state_values.get_or_create(
-        multivariate_feature_option=mv_opt,
-        defaults={"percentage_allocation": 50.0}
-    )
-    mv_fs.percentage_allocation = 50.0
-    mv_fs.save()
-
-    # B. Conversion Metric on event 'checkout_completed'
-    metric, _ = Metric.objects.get_or_create(
-        environment=env,
-        name="Checkout Completed",
-        defaults={
-            "description": "Conversion metric tracking completed checkout purchases",
-            "aggregation": "count",
-            "direction": "up",
-            "definition": {"version": 1, "event": "checkout_completed"},
-        }
-    )
-
-    # C. Experiment: Checkout A/B Experiment
-    # Reset existing experiment and historical events for clean, reproducible demonstration
-    from experimentation.models import ExperimentExposures, ExperimentResults, SDKExperimentationEvent
+    # Clean historical SDK events to prevent identity cross-experiment quarantine
+    from experimentation.models import SDKExperimentationEvent
     SDKExperimentationEvent.objects.filter(environment_key=env.api_key).delete()
-    for existing_exp in Experiment.objects.filter(feature=exp_feature, environment=env):
-        ExperimentResults.objects.filter(experiment=existing_exp).delete()
-        ExperimentExposures.objects.filter(experiment=existing_exp).delete()
-        existing_exp.delete()
 
-    exp = Experiment.objects.create(
-        feature=exp_feature,
-        name="Checkout A/B Experiment",
-        hypothesis="New checkout flow increases completed checkouts without increasing errors",
-        environment=env,
-    )
-    ExperimentMetric.objects.create(
-        experiment=exp,
-        metric=metric,
-        expected_direction=ExpectedDirection.INCREASE.value,
-    )
-    apply_experiment_rollout(
-        exp,
-        RolloutSpec(
-            enabled=True,
-            rollout_percentage=100.0,
-            feature_state_value="control",
-            value_type="string",
-            variants=[Variant(id=mv_opt.id, weight=50.0)],
-            author=AuthorData.from_user(user),
-        ),
-    )
-    transition_experiment_status(exp, ExperimentStatus.RUNNING.value, user)
-    # Ensure expected variant shares (for SRM calculation) evaluate to 50% variation, 50% control
-    for fs in FeatureState.objects.filter(feature=exp_feature, environment=env):
-        fs.multivariate_feature_state_values.filter(multivariate_feature_option=mv_opt).update(percentage_allocation=50.0)
-    print(f"Configured & Started Experiment: '{exp.name}' [ID={exp.id}, status={exp.status}, segment={exp.rollout_segment_id}]")
-
-    # 9. Generate .env file contents
+    # 7. Generate .env file contents
     dotenv_content = f"""# Flagsmith API Configuration (Auto-generated by scripts/setup_flagsmith.py)
 FLAGSMITH_URL=http://localhost:8000/api/v1
 FLAGSMITH_ADMIN_API_KEY={raw_key}
@@ -237,14 +132,7 @@ ADMIN_PASSWORD={admin_password}
 # DEMO_API_TOKEN=
 """
 
-    # Write to container local .env if possible
-    try:
-        with open("/app/.env", "w", encoding="utf-8") as f:
-            f.write(dotenv_content)
-    except Exception:
-        pass
-
-    print("\n=== SETUP SUMMARY ===")
+    print("\n=== SETUP SUMMARY (CORE PRIMITIVES) ===")
     print(f"Dashboard URL: http://localhost:8000")
     print(f"Admin Login: {admin_email} / {admin_password}")
     print(f"Organisation: {org.name} (ID: {org.id})")
@@ -260,6 +148,161 @@ ADMIN_PASSWORD={admin_password}
     print("=== DOTENV_END ===\n")
 
 
+def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_id: int, env_key: str):
+    """
+    Creates flag variants, the metric, and the experiment, and starts it,
+    THROUGH THE PUBLIC ADMIN API as documented in official Flagsmith docs:
+    https://docs.flagsmith.com/experimentation/set-up-with-a-coding-agent
+    """
+    headers = {
+        "Authorization": f"Api-Key {admin_api_key}",
+        "Content-Type": "application/json",
+    }
+    print("==> Configuring Flags, Metric, and Experiment via Public Admin API...")
+
+    # 1. Feature: new_checkout (Standard Rollout Flag)
+    feats_resp = requests.get(f"{api_url}/projects/{project_id}/features/", headers=headers)
+    feats_resp.raise_for_status()
+    feats = feats_resp.json().get("results", [])
+    nc_feat = next((f for f in feats if f["name"] == "new_checkout"), None)
+    if not nc_feat:
+        r = requests.post(
+            f"{api_url}/projects/{project_id}/features/",
+            headers=headers,
+            json={
+                "name": "new_checkout",
+                "type": "STANDARD",
+                "default_enabled": False,
+                "description": "New checkout flow gated rollout flag",
+            },
+        )
+        r.raise_for_status()
+        nc_feat = r.json()
+        print(f"  ✔ Created feature 'new_checkout' via Admin API (ID={nc_feat['id']})")
+    else:
+        print(f"  ✔ Feature 'new_checkout' already exists via Admin API (ID={nc_feat['id']})")
+
+    # 2. Multivariate Feature: checkout_experiment
+    exp_feat = next((f for f in feats if f["name"] == "checkout_experiment"), None)
+    if not exp_feat:
+        r = requests.post(
+            f"{api_url}/projects/{project_id}/features/",
+            headers=headers,
+            json={
+                "name": "checkout_experiment",
+                "type": "MULTIVARIATE",
+                "initial_value": "control",
+                "default_enabled": True,
+                "description": "Multivariate feature flag for checkout A/B experiment",
+                "multivariate_options": [
+                    {
+                        "type": "unicode",
+                        "string_value": "variation",
+                        "default_percentage_allocation": 50.0,
+                        "key": "variation",
+                    }
+                ],
+            },
+        )
+        r.raise_for_status()
+        exp_feat = r.json()
+        print(f"  ✔ Created multivariate feature 'checkout_experiment' via Admin API (ID={exp_feat['id']})")
+    else:
+        print(f"  ✔ Multivariate feature 'checkout_experiment' already exists via Admin API (ID={exp_feat['id']})")
+
+    mv_options = exp_feat.get("multivariate_options", [])
+    if not mv_options:
+        f_detail = requests.get(f"{api_url}/projects/{project_id}/features/{exp_feat['id']}/", headers=headers).json()
+        mv_options = f_detail.get("multivariate_options", [])
+    opt_id = mv_options[0]["id"]
+
+    # 3. Clean up any existing experiments & metrics for a reproducible fresh run
+    exps_resp = requests.get(f"{api_url}/environments/{env_key}/experiments/", headers=headers)
+    exps = exps_resp.json().get("results", []) if exps_resp.status_code == 200 else []
+    for exp in exps:
+        if exp["status"] == "running":
+            requests.post(f"{api_url}/environments/{env_key}/experiments/{exp['id']}/complete/", headers=headers)
+        requests.delete(f"{api_url}/environments/{env_key}/experiments/{exp['id']}/", headers=headers)
+        print(f"  ✔ Reset existing experiment {exp['id']} via Admin API")
+
+    metrics_resp = requests.get(f"{api_url}/environments/{env_key}/experiment-metrics/", headers=headers)
+    metrics = metrics_resp.json().get("results", []) if metrics_resp.status_code == 200 else []
+    for m in metrics:
+        requests.delete(f"{api_url}/environments/{env_key}/experiment-metrics/{m['id']}/", headers=headers)
+        print(f"  ✔ Reset existing metric {m['id']} via Admin API")
+
+    # 4. Conversion Metric: Checkout Completed
+    m_res = requests.post(
+        f"{api_url}/environments/{env_key}/experiment-metrics/",
+        headers=headers,
+        json={
+            "name": "Checkout Completed",
+            "description": "Conversion metric tracking completed checkout purchases",
+            "aggregation": "count",
+            "direction": "up",
+            "definition": {"version": 1, "event": "checkout_completed"},
+        },
+    )
+    m_res.raise_for_status()
+    metric_id = m_res.json()["id"]
+    print(f"  ✔ Created metric 'Checkout Completed' via Admin API (ID={metric_id})")
+
+    # 5. Create Experiment: Checkout A/B Experiment
+    exp_res = requests.post(
+        f"{api_url}/environments/{env_key}/experiments/",
+        headers=headers,
+        json={
+            "feature": exp_feat["id"],
+            "name": "Checkout A/B Experiment",
+            "hypothesis": "New checkout flow increases completed checkouts without increasing errors",
+            "metrics": [{"metric": metric_id, "expected_direction": "increase"}],
+            "experiment_rollout": {
+                "enabled": True,
+                "rollout_percentage": 100.0,
+                "feature_state_value": {"type": "string", "value": "control"},
+                "multivariate_feature_state_values": [
+                    {
+                        "multivariate_feature_option": opt_id,
+                        "percentage_allocation": 50.0,
+                    }
+                ],
+            },
+        },
+    )
+    exp_res.raise_for_status()
+    exp_data = exp_res.json()
+    exp_id = exp_data["id"]
+    print(f"  ✔ Created experiment '{exp_data['name']}' via Admin API (ID={exp_id})")
+
+    # 6. Start Experiment
+    start_res = requests.post(f"{api_url}/environments/{env_key}/experiments/{exp_id}/start/", headers=headers)
+    start_res.raise_for_status()
+    started_data = start_res.json()
+    print(f"  ✔ Started experiment via Admin API (status={started_data.get('status')})")
+
+    # 7. Configure base environment feature state to 50% allocation on variation for SRM expected shares
+    fs_resp = requests.get(f"{api_url}/features/featurestates/?environment={env_id}&feature={exp_feat['id']}", headers=headers)
+    if fs_resp.status_code == 200:
+        env_fs = next((f for f in fs_resp.json().get("results", []) if f.get("feature_segment") is None), None)
+        if env_fs and env_fs.get("multivariate_feature_state_values"):
+            mv_val = env_fs["multivariate_feature_state_values"][0]
+            requests.patch(
+                f"{api_url}/features/featurestates/{env_fs['id']}/",
+                headers=headers,
+                json={
+                    "environment": env_id,
+                    "multivariate_feature_state_values": [
+                        {
+                            "id": mv_val["id"],
+                            "multivariate_feature_option": opt_id,
+                            "percentage_allocation": 50.0,
+                        }
+                    ],
+                },
+            )
+            print("  ✔ Configured 50/50 variant allocation on environment feature state via Admin API")
+
+
 def host_run():
     """Wrapper executed when setup_flagsmith.py is called from host."""
     import subprocess
@@ -272,10 +315,10 @@ def host_run():
     print("==> Copying setup script into Flagsmith container...")
     subprocess.run(["docker", "compose", "cp", str(script_path), "flagsmith:/app/setup_flagsmith.py"], check=True)
 
-    print("==> Executing setup inside Flagsmith...")
+    print("==> Executing core DB setup inside Flagsmith Django shell (admin user, org, project, env, master key)...")
     try:
         proc = subprocess.run(
-            ["docker", "compose", "exec", "-T", "flagsmith", "python", "manage.py", "shell", "-c", "exec(open('/app/setup_flagsmith.py').read()); setup()"],
+            ["docker", "compose", "exec", "-T", "flagsmith", "python", "manage.py", "shell", "-c", "exec(open('/app/setup_flagsmith.py').read()); setup_django_shell()"],
             capture_output=True,
             text=True,
             check=True,
@@ -295,7 +338,6 @@ def host_run():
 
     if "=== DOTENV_START ===" in proc.stdout:
         dotenv = proc.stdout.split("=== DOTENV_START ===")[1].split("=== DOTENV_END ===")[0].strip()
-        # Preserve SLACK_WEBHOOK_URL and other custom keys if already defined
         existing_slack = ""
         if env_file.exists():
             for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -309,10 +351,23 @@ def host_run():
             f.write(dotenv + "\n")
         print(f"✔ Automatically configured and wrote {env_file}!")
 
+    # Now execute step 2: Public Admin API configuration for features, metric, and experiment
+    from dotenv import dotenv_values
+    conf = dotenv_values(env_file)
+    api_url = conf.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
+    admin_key = conf.get("FLAGSMITH_ADMIN_API_KEY", "")
+    proj_id = int(conf.get("FLAGSMITH_PROJECT_ID", "1"))
+    env_id = int(conf.get("FLAGSMITH_ENVIRONMENT_ID", "1"))
+    env_key = conf.get("FLAGSMITH_ENVIRONMENT_KEY", "")
+
+    setup_via_admin_api(api_url, admin_key, proj_id, env_id, env_key)
+
 
 if __name__ == "__main__":
     try:
         import django
-        setup()
+        # Running inside container
+        setup_django_shell()
     except ImportError:
+        # Running on host
         host_run()

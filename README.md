@@ -127,11 +127,14 @@ Before Guardian permits promotion to 100% at the `AWAITING_APPROVAL` gate, it qu
 
 Only when `checkout_experiment` demonstrates statistically valid positive or non-inferior conversion performance with a healthy SRM p-value is the operator approval gate unlocked.
 
-### Experiment Recalculation & `DEMO_FORCE_RECALC=1`
+### Experiment Recalculation & Quickstart Mode (`DEMO_FORCE_RECALC=1`)
 
-In production, Flagsmith's public API enforces a 300-second (5-minute) cooldown on background experiment results recalculation (`HTTP 429 Too Many Requests`). Guardian's normal operational path uses strictly the public API: `POST /api/v1/environments/{key}/experiments/{id}/results/refresh/` once at the start of each stage's soak window, handling 429 responses gracefully by reading the last computed results.
+In production, Flagsmith's public API enforces a 300-second (5-minute) cooldown on background experiment results recalculation (`HTTP 429 Too Many Requests`). Guardian's standard production path uses strictly the public API: `POST /api/v1/environments/{key}/experiments/{id}/results/refresh/` once at the start of each stage's soak window, handling 429 responses gracefully by reading the last computed results.
 
-For fast automated demonstration runs (< 3 minutes) where soak times are accelerated (`DEMO_SOAK_SECONDS=3`), `./scripts/demo.sh` sets `DEMO_FORCE_RECALC=1`. This demo shortcut triggers immediate recalculation via Flagsmith's task processor and is explicitly labeled as `(demo shortcut)` in log output and on the live status page.
+**Which mode does the Quickstart run and why?**
+* The `./scripts/demo.sh` quickstart runs in **`DEMO_FORCE_RECALC=1`** mode by default.
+* **Why**: The automated demo runs in under 90 seconds (accelerated soak time `SOAK_TIME_SECONDS=3`). Under Flagsmith's public 5-minute cooldown, an event burst generated in Phase 3 cannot be recalculated in time for the Phase 3 promotion gate, which would correctly block promotion due to inconclusive data. `DEMO_FORCE_RECALC=1` provides a demo shortcut triggering immediate task recalculation so the operator approval gate can evaluate real Bayesian lift within seconds. This shortcut is explicitly announced in the console banner, tagged as `[demo shortcut]` in logs, and labeled as `(demo shortcut)` on the live status page.
+* To run the demo strictly adhering to the public API 5-minute cooldown without shortcuts, pass `DEMO_FORCE_RECALC=0 ./scripts/demo.sh`. In Phase 3, Guardian will demonstrate its safety posture by blocking promotion because fresh results are not yet available under the 5-minute cooldown.
 
 ---
 
