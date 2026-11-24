@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import secrets
 import requests
 
 def setup_django_shell():
@@ -19,7 +20,9 @@ def setup_django_shell():
     strictly through the public Admin API as per official documentation.
     """
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "changeme_flagsmith_admin_pass")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    if not admin_password:
+        admin_password = secrets.token_urlsafe(16)
 
     from users.models import FFAdminUser
     from organisations.models import Organisation, OrganisationRole, UserOrganisation
@@ -78,7 +81,7 @@ def setup_django_shell():
         is_admin=True
     )
     print(f"Admin API Key Prefix: {key_obj.prefix}")
-    print(f"Admin API Key: {raw_key}")
+    print("Admin API Key: written to .env")
 
     # 6. Warehouse Connection (Flagsmith Database for SDK event collection)
     wh_conn, created = WarehouseConnection.objects.get_or_create(
@@ -134,12 +137,12 @@ ADMIN_PASSWORD={admin_password}
 
     print("\n=== SETUP SUMMARY (CORE PRIMITIVES) ===")
     print(f"Dashboard URL: http://localhost:8000")
-    print(f"Admin Login: {admin_email} / {admin_password}")
+    print(f"Admin Login: {admin_email} (password: written to .env)")
     print(f"Organisation: {org.name} (ID: {org.id})")
     print(f"Project: {project.name} (ID: {project.id})")
     print(f"Environment: {env.name} (ID: {env.id})")
     print(f"Environment Client Key: {env.api_key}")
-    print(f"Admin API Key: {raw_key}")
+    print("Admin API Key: written to .env")
     print(f"Warehouse Status: {wh_conn.status}")
 
     # Delimited block for host extraction
@@ -306,11 +309,16 @@ def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_i
 def host_run():
     """Wrapper executed when setup_flagsmith.py is called from host."""
     import subprocess
+    import secrets
     from pathlib import Path
 
     root_dir = Path(__file__).resolve().parent.parent
     script_path = root_dir / "scripts" / "setup_flagsmith.py"
     env_file = root_dir / ".env"
+
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    if not admin_password:
+        admin_password = secrets.token_urlsafe(16)
 
     print("==> Copying setup script into Flagsmith container...")
     subprocess.run(["docker", "compose", "cp", str(script_path), "flagsmith:/app/setup_flagsmith.py"], check=True)
@@ -318,7 +326,12 @@ def host_run():
     print("==> Executing core DB setup inside Flagsmith Django shell (admin user, org, project, env, master key)...")
     try:
         proc = subprocess.run(
-            ["docker", "compose", "exec", "-T", "flagsmith", "python", "manage.py", "shell", "-c", "exec(open('/app/setup_flagsmith.py').read()); setup_django_shell()"],
+            [
+                "docker", "compose", "exec", "-T",
+                "-e", f"ADMIN_PASSWORD={admin_password}",
+                "flagsmith", "python", "manage.py", "shell",
+                "-c", "exec(open('/app/setup_flagsmith.py').read()); setup_django_shell()"
+            ],
             capture_output=True,
             text=True,
             check=True,
@@ -332,12 +345,13 @@ def host_run():
             print("--- STDERR ---", file=sys.stderr)
             print(e.stderr, file=sys.stderr)
         raise
-    print(proc.stdout)
-    if proc.stderr:
-        print(proc.stderr, file=sys.stderr)
 
     if "=== DOTENV_START ===" in proc.stdout:
-        dotenv = proc.stdout.split("=== DOTENV_START ===")[1].split("=== DOTENV_END ===")[0].strip()
+        before, rest = proc.stdout.split("=== DOTENV_START ===", 1)
+        dotenv, after = rest.split("=== DOTENV_END ===", 1)
+        dotenv = dotenv.strip()
+        cleaned_stdout = before.rstrip() + ("\n" + after.lstrip() if after.strip() else "")
+
         existing_slack = ""
         if env_file.exists():
             for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -349,7 +363,14 @@ def host_run():
             dotenv += "\n# Webhooks (Optional)\nSLACK_WEBHOOK_URL=\n"
         with open(env_file, "w", encoding="utf-8") as f:
             f.write(dotenv + "\n")
-        print(f"✔ Automatically configured and wrote {env_file}!")
+
+        print(cleaned_stdout.strip())
+        print(f"✔ Admin API key and password written to {env_file}")
+    else:
+        print(proc.stdout.strip())
+
+    if proc.stderr:
+        print(proc.stderr, file=sys.stderr)
 
     # Now execute step 2: Public Admin API configuration for features, metric, and experiment
     from dotenv import dotenv_values
