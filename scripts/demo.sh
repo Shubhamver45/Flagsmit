@@ -148,7 +148,7 @@ wait_for_state() {
 
 # Helper functions for Flagsmith Experimentation Results
 refresh_flagsmith_experiment() {
-    if [ "${DEMO_FORCE_RECALC:-1}" = "1" ]; then
+    if [ "${DEMO_FORCE_RECALC:-0}" = "1" ]; then
         echo "  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor..."
         docker compose exec -T flagsmith python manage.py shell -c "
 from experimentation.tasks import compute_experiment_results
@@ -226,6 +226,8 @@ try:
         else:
             srm_str = \"Healthy (p-value: n/a (collecting data))\"
         print(f\"  • SRM Status        : {srm_str}\")
+        srm_p_val_str = f\"{srm_p:.6f}\" if isinstance(srm_p, float) else (str(srm_p) if srm_p is not None else \"n/a (collecting data)\")
+        print(f\"  • SRM p-value       : {srm_p_val_str}\")
         print(f\"  • Collecting Data   : {exp.get('is_collecting_data')}\")
         print(f\"  • Approval Gate     : {'ELIGIBLE (Clear for 100% promotion)' if exp.get('is_eligible_for_approval') else 'BLOCKED: ' + str(exp.get('block_reason'))}\")
 except Exception as e:

@@ -1,0 +1,15 @@
+# Gitleaks ignore list for known historical throwaway keys in destroyed local instances
+# Early commits contained throwaway local development API keys and environment keys.
+# See SECURITY.md for details.
+
+a0fb5fcaeaeb70a874ded187423c8108dc9ba921:scripts/rehearse_demo.py:generic-api-key:24
+a0fb5fcaeaeb70a874ded187423c8108dc9ba921:scripts/rehearse_demo.py:generic-api-key:25
+7d70c7fb5de5a56536a993e4da05351ad1d7c28a:config.yaml:generic-api-key:5
+7d70c7fb5de5a56536a993e4da05351ad1d7c28a:README.md:generic-api-key:187
+64b537a65a7f80b829ef1022c8fd591f7f5addfa:guardian/config.example.yaml:generic-api-key:5
+b1565c048caaf83648fec720d85965d03a8e14cf:scripts/test_live_metrics.py:generic-api-key:23
+b1565c048caaf83648fec720d85965d03a8e14cf:scripts/test_live_metrics.py:generic-api-key:24
+c145c5f69d56895321d1c8e0e4a86b725443c4e2:demo/app.py:generic-api-key:13
+c145c5f69d56895321d1c8e0e4a86b725443c4e2:docker-compose.yml:generic-api-key:110
+40dc874dc525d50707a0c330b1f68a3a37e7544e:scripts/run_spike.py:generic-api-key:9
+40dc874dc525d50707a0c330b1f68a3a37e7544e:scripts/run_spike.py:generic-api-key:10
