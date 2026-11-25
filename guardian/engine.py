@@ -194,7 +194,8 @@ class GuardianEngine:
         saved = self.storage.load_rollout_state(flag_name)
         stored_pct = saved["current_percentage"] if saved else sm.current_percentage
         sm_pct = sm.current_percentage
-        stored_state = saved["current_state"] if saved else sm.current_state
+        stored_state = sm.current_state if sm.current_state != "PENDING" else (saved["current_state"] if saved else "PENDING")
+        expected_pct = sm.current_percentage if sm.current_percentage > 0.0 else stored_pct
 
         is_enabled = bool(new_state.get("enabled", False))
         mv_values = new_state.get("multivariate_feature_state_values", [])
@@ -217,11 +218,10 @@ class GuardianEngine:
             or abs(actual_pct - sm_pct) <= 0.01
         )
 
-        expected_pct = sm_pct if abs(actual_pct - sm_pct) <= 0.01 else stored_pct
-
         if matches_expected:
             if self.drift_flags.get(flag_name, {}).get("detected"):
-                logger.info(f"✔ Drift resolved via webhook for flag '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%).")
+                resolve_msg = f"Drift resolved via webhook: flag '{flag_name}' restored to expected {expected_pct}% ({stored_state})."
+                logger.info(f"✔ {resolve_msg}")
                 self.drift_flags[flag_name] = {"detected": False}
                 self.storage.save_rollout_state(
                     flag_name=flag_name,
@@ -233,6 +233,20 @@ class GuardianEngine:
                     drift_detected=False,
                     drift_details=None,
                 )
+                entry = self.audit_logger.record(
+                    flag_name=flag_name,
+                    from_state=stored_state,
+                    to_state=stored_state,
+                    decision="RESOLVED",
+                    reason=f"[DRIFT RESOLVED via Webhook] {resolve_msg}",
+                    numbers={
+                        "target_percentage": expected_pct,
+                        "actual_percentage": actual_pct,
+                        "expected_percentage": expected_pct,
+                        "source": "webhook",
+                    },
+                )
+                self.alert_dispatcher.dispatch(entry)
             logger.info(f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%). No drift.")
             return {
                 "status": "ok",
@@ -272,9 +286,10 @@ class GuardianEngine:
             flag_name=flag_name,
             from_state=stored_state,
             to_state=stored_state,
-            decision=RolloutDecision.HOLD.value,
+            decision="DRIFT",
             reason=f"[DRIFT DETECTED via Webhook] {drift_msg}",
             numbers={
+                "target_percentage": actual_pct,
                 "changed_by": changed_by,
                 "actual_percentage": actual_pct,
                 "expected_percentage": expected_pct,
@@ -324,7 +339,8 @@ class GuardianEngine:
                 or abs(real_pct - sm_pct) <= 0.01
             )
             has_drift = not matches_expected
-            expected_pct = sm_pct if abs(real_pct - sm_pct) <= 0.01 else stored_pct
+            expected_pct = sm.current_percentage if sm.current_percentage > 0.0 else stored_pct
+            stored_state = sm.current_state if sm.current_state != "PENDING" else (saved["current_state"] if saved else "PENDING")
 
             if has_drift:
                 current_drift = self.drift_flags.get(flag_name, {})
@@ -359,9 +375,10 @@ class GuardianEngine:
                         flag_name=flag_name,
                         from_state=stored_state,
                         to_state=stored_state,
-                        decision=RolloutDecision.HOLD.value,
+                        decision="DRIFT",
                         reason=f"[DRIFT DETECTED via Polling] {drift_msg}",
                         numbers={
+                            "target_percentage": real_pct,
                             "actual_percentage": real_pct,
                             "expected_percentage": expected_pct,
                             "source": "polling",
@@ -371,7 +388,8 @@ class GuardianEngine:
                 results[flag_name] = {"drift": True, "actual": real_pct, "expected": expected_pct}
             else:
                 if self.drift_flags.get(flag_name, {}).get("detected"):
-                    logger.info(f"✔ Drift resolved for flag '{flag_name}': actual ({real_pct}%) matches expected ({expected_pct}%).")
+                    resolve_msg = f"Drift resolved via polling: flag '{flag_name}' restored to expected {expected_pct}% ({stored_state})."
+                    logger.info(f"✔ {resolve_msg}")
                     self.drift_flags[flag_name] = {"detected": False}
                     self.storage.save_rollout_state(
                         flag_name=flag_name,
@@ -383,6 +401,21 @@ class GuardianEngine:
                         drift_detected=False,
                         drift_details=None,
                     )
+                    entry = self.audit_logger.record(
+                        flag_name=flag_name,
+                        from_state=stored_state,
+                        to_state=stored_state,
+                        decision="RESOLVED",
+                        reason=f"[DRIFT RESOLVED via Polling] {resolve_msg}",
+                        numbers={
+                            "target_percentage": expected_pct,
+                            "actual_percentage": real_pct,
+                            "expected_percentage": expected_pct,
+                            "source": "polling",
+                        },
+                    )
+                    self.alert_dispatcher.dispatch(entry)
+                results[flag_name] = {"drift": False, "actual": real_pct, "expected": expected_pct}
                 results[flag_name] = {"drift": False, "actual": real_pct, "expected": expected_pct}
 
         return results

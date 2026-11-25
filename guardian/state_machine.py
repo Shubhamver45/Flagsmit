@@ -29,6 +29,8 @@ class RolloutDecision(str, Enum):
     ROLLBACK = "ROLLBACK"
     AWAIT_APPROVAL = "AWAIT_APPROVAL"
     PROMOTED = "PROMOTED"
+    DRIFT = "DRIFT"
+    RESOLVED = "RESOLVED"
 
 
 class RolloutStateMachine:

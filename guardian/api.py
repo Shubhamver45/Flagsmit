@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 from typing import Any, Dict, Optional
@@ -19,6 +20,8 @@ from pydantic import BaseModel
 from guardian.engine import GuardianEngine
 from guardian.state_machine import RolloutState
 from guardian.status_page import STATUS_PAGE_HTML
+
+logger = logging.getLogger("guardian.api")
 
 
 class ApproveRequest(BaseModel):
@@ -106,6 +109,8 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid X-Flagsmith-Signature",
                 )
+            print("✔ webhook signature verified (X-Flagsmith-Signature)")
+            logger.info("✔ webhook signature verified (X-Flagsmith-Signature)")
 
         try:
             payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}

@@ -102,7 +102,7 @@ Guardian was designed from the ground up to integrate with open-source, self-hos
    }
    ```
 2. **Instant 0% Rollback Mechanism**:
-   When any guardrail metric breaches its threshold, Guardian immediately calls Flagsmith to set the multivariate allocation to `0.0%` and toggle the flag to `enabled: false`, halting all exposure to the problematic variant in milliseconds.
+   When any guardrail metric breaches its threshold, Guardian immediately calls Flagsmith to set the multivariate allocation to `0.0%` and toggle the flag to `enabled: false`, halting all exposure to the problematic variant within seconds.
 3. **Decoupled Experimentation & System Segment Awareness**:
    As discovered during our feasibility spike ([`docs/spike.md`](docs/spike.md)), Flagsmith's experimentation engine locks direct feature state modifications (`HTTP 409 Conflict: system_segment_modification`). Guardian decouples rollout management from experimentation segments, allowing normal rollout flags to advance while concurrently querying Flagsmith's Bayesian experimentation metrics.
 4. **Flagsmith Real-Time Experimentation, SRM & Bayesian Gating**:
@@ -555,7 +555,7 @@ Guardian exposes an endpoint at `POST /webhooks/flagsmith` that validates incomi
        "enabled": true
      }'
    ```
-*(Note: In the automated local demo, `scripts/setup_flagsmith.py` automatically registers this webhook pointing to `http://host.docker.internal:8080/webhooks/flagsmith`).*
+*(Note: In the automated local demo, `scripts/setup_flagsmith.py` automatically registers this webhook pointing to `http://host.docker.internal:8080/webhooks/flagsmith`. Note that `SSRF_ALLOWED_HOSTS: 'host.docker.internal,127.0.0.1,localhost'` in `docker-compose.yml` and `host.docker.internal` are **demo-only** configurations enabling the Flagsmith Docker container to communicate with Guardian on the host; in production, use standard internal DNS names or FQDNs without weakening SSRF protections).*
 
 ### 3. How Drift Detection & Protection Operates
 * **Instant Out-of-Band Pause**: When an operator alters a flag percentage directly in Flagsmith or disables it out-of-band, Flagsmith dispatches a `FLAG_UPDATED` webhook. Guardian verifies the cryptographic signature, compares the actual state to SQLite, flags **DRIFT**, halts stage progression, identifies the modifier (`changed_by`), and updates the status dashboard.

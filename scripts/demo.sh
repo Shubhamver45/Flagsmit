@@ -119,6 +119,14 @@ echo "  • Demo Checkout App       : http://localhost:5001/"
 echo "  • Prometheus Graph        : http://localhost:9090/"
 echo "========================================================================"
 
+echo "==> Verifying Flagsmith Admin Authentication via POST /api/v1/auth/login/:"
+ADMIN_EMAIL_VAL=$(python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env').get('ADMIN_EMAIL', 'admin@example.com'))")
+ADMIN_PASS_VAL=$(python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env').get('ADMIN_PASSWORD', ''))")
+LOGIN_TOKEN_RESP=$(curl -s -X POST "http://localhost:8000/api/v1/auth/login/" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\": \"${ADMIN_EMAIL_VAL}\", \"password\": \"${ADMIN_PASS_VAL}\"}")
+echo "  Auth Token Response: ${LOGIN_TOKEN_RESP}"
+
 if [ "$SERVE_MODE" -eq 1 ]; then
     echo "Running in SERVE mode. Press Ctrl+C to stop."
     wait
@@ -249,13 +257,15 @@ wait_for_state "STAGE_1" 20
 
 echo ""
 echo "--- Mid-Rollout Scenario: Out-of-Band State Change & Real-Time Drift Detection ---"
-echo "Simulating external operator altering 'new_checkout' to 50% via Admin API..."
+echo "Simulating external operator ('ops-engineer') altering 'new_checkout' to 50% via Admin API..."
+DRIFT_START_TIME=$(python3 -c "import time; print(time.time())")
 python3 -c "
 import os, requests
 from dotenv import dotenv_values
 env = dotenv_values('.env')
 api_url = env.get('FLAGSMITH_URL', 'http://localhost:8000/api/v1')
-headers = {'Authorization': f'Api-Key {env.get(\"FLAGSMITH_ADMIN_API_KEY\", \"\")}', 'Content-Type': 'application/json'}
+ops_key = env.get('FLAGSMITH_OPS_API_KEY') or env.get('FLAGSMITH_ADMIN_API_KEY', '')
+headers = {'Authorization': f'Api-Key {ops_key}', 'Content-Type': 'application/json'}
 env_key = env.get('FLAGSMITH_ENVIRONMENT_KEY', '')
 fs_resp = requests.get(f'{api_url}/environments/{env_key}/featurestates/?q=new_checkout', headers=headers)
 fs_list = fs_resp.json().get('results', [])
@@ -277,41 +287,57 @@ if fs_list:
             'environment': fs['environment'],
             'enabled': False,
         }).raise_for_status()
-    print('  ✔ External operator changed flag to 50% in Flagsmith (triggering real-time webhook to Guardian)')
+    print('  ✔ External operator (ops-engineer) changed flag to 50% in Flagsmith (triggering real-time webhook to Guardian)')
 "
-sleep 2
 
 echo "Verifying Guardian detects drift, pauses rollout, and surfaces drift alert:"
 DRIFT_DETECTED=0
-for i in $(seq 1 12); do
+for i in $(seq 1 20); do
     DRIFT_INFO=$(python3 -c "
 import urllib.request, json
 try:
     s = json.loads(urllib.request.urlopen('http://localhost:8080/status', timeout=3).read())
     d = s.get('drift', {})
     if d.get('detected'):
-        print(f\"DETECTED|{d.get('source')}|{d.get('changed_by')}|{d.get('message')}\")
+        print(f\"DETECTED|{d.get('source')}|{d.get('changed_by')}|{d.get('actual_percentage')}|{d.get('expected_percentage')}|{d.get('stored_state')}|{d.get('message')}\")
     else:
         print('NONE')
 except Exception as e:
     print('ERR:', e)
 ")
     if [[ "$DRIFT_INFO" == DETECTED* ]]; then
+        DRIFT_DETECTED_TIME=$(python3 -c "import time; print(time.time())")
+        MEASURED_LATENCY=$(python3 -c "print(round($DRIFT_DETECTED_TIME - $DRIFT_START_TIME, 2))")
         DRIFT_DETECTED=1
-        IFS='|' read -r _ SRC CHANGED_BY MSG <<< "$DRIFT_INFO"
-        echo "  ⚠️  [DRIFT DETECTED] Guardian paused rollout execution within seconds!"
-        echo "  • Detection Source: $SRC"
-        echo "  • Modified By     : $CHANGED_BY"
-        echo "  • Drift Details   : $MSG"
+        IFS='|' read -r _ SRC CHANGED_BY ACTUAL_PCT EXPECTED_PCT STORED_STATE MSG <<< "$DRIFT_INFO"
+        echo ""
+        echo "========================================================================"
+        echo "⚠️  DRIFT WARNING DETECTED (measured latency: ${MEASURED_LATENCY}s)"
+        echo "  • Flag       : new_checkout"
+        echo "  • Detection  : $SRC"
+        echo "  • Modified By: $CHANGED_BY"
+        echo "  • Actual %   : ${ACTUAL_PCT}%"
+        echo "  • Expected % : ${EXPECTED_PCT}% (${STORED_STATE})"
+        echo "  • Status     : Rollout Execution HELD"
+        echo "========================================================================"
         break
     fi
-    sleep 1
+    sleep 0.5
 done
 
 if [ "$DRIFT_DETECTED" -ne 1 ]; then
     echo "❌ Drift was not detected by Guardian!"
     exit 1
 fi
+
+echo ""
+echo "==> Security Test: Verifying HMAC-SHA256 signature enforcement (POST /webhooks/flagsmith):"
+echo "Testing with tampered / invalid signature (expected: HTTP 401 Unauthorized):"
+curl -s -i -X POST "http://localhost:8080/webhooks/flagsmith" \
+  -H "Content-Type: application/json" \
+  -H "X-Flagsmith-Signature: bad_signature_tampered_hash_12345" \
+  -d '{"event_type": "FLAG_UPDATED"}' | head -n 7
+echo ""
 
 echo "Resolving drift: Restoring flag allocation back to STAGE_1 (1.0%) in Flagsmith:"
 python3 -c "

@@ -69,7 +69,7 @@ Open the following browser tabs (or split-screen layout):
 > *Without any human intervention:*  
 > 1. *Guardian transitions state to **ROLLED_BACK**.*  
 > 2. *It calls the Flagsmith Admin API to instantly set the flag allocation back to **0.0%** and disable the flag.*  
-> 3. *Looking at the Flagsmith UI, all user traffic is immediately redirected back to the legacy checkout flow—blast radius eliminated in milliseconds!*  
+> 3. *Looking at the Flagsmith UI, all user traffic is immediately redirected back to the legacy checkout flow—blast radius eliminated within seconds!*  
 > 4. *Simultaneously, Guardian dispatches a rich Slack BlockKit alert with the exact breach percentage, sample size, and root-cause evidence."*
 
 ---
