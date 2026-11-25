@@ -431,11 +431,11 @@ else
 fi
 
 echo ""
-echo "--- Phase 3: Happy-Path Scenario (WINNER Variation) & Human Operator Promotion ---"
+echo "--- Phase 3: Happy-Path Scenario (No Evidence of Harm) & Human Operator Promotion ---"
 echo "Setting experiment mode to 'winner' (checkout event rate per user visit: variation ~98%, control ~10%)..."
-echo "ℹ Demonstrating decisive winner under require_winner: true (chance to win >= 95%, CI interval above zero)."
+echo "ℹ Verifying gate clearance under no evidence of harm (chance to be worse <= 10.0%, no SRM)."
 curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=winner" | python3 -m json.tool
-echo "Generating traffic for winner variation demonstrating decisive positive lift..."
+echo "Generating traffic for winner variation demonstrating positive lift..."
 PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 450 --identities 300 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
@@ -449,7 +449,7 @@ echo "==> Guardian Status Check (Gate Evaluation for Winner Variation):"
 print_guardian_experiment_status
 
 echo "Executing operator promotion approval:"
-if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: decisive winner (chance to win >= 95%, CI interval above zero), no SRM"; then
+if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: no evidence of harm (chance to be worse <= 10.0%), no SRM"; then
     wait_for_state "PROMOTED" 10
     echo "✔ Feature flag successfully promoted to 100%!"
 else

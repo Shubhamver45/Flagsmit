@@ -276,11 +276,17 @@ class GuardianEngine:
 
             # Deduplicate identical drift events (same flag, actual, and expected within grace window)
             current_drift = self.drift_flags.get(flag_name, {})
+            now_ts = time.time()
+            drift_ts = current_drift.get("detected_at")
+            if not isinstance(drift_ts, (int, float)):
+                drift_ts = current_drift.get("timestamp")
+            ts_diff = (now_ts - drift_ts) if isinstance(drift_ts, (int, float)) else 0.0
+
             if (
                 current_drift.get("detected")
                 and abs(float(current_drift.get("actual_percentage", -1.0)) - actual_pct) <= 0.01
                 and abs(float(current_drift.get("expected_percentage", -1.0)) - expected_pct) <= 0.01
-                and (time.time() - float(current_drift.get("timestamp", 0.0))) < self.in_flight_grace_seconds
+                and ts_diff < self.in_flight_grace_seconds
             ):
                 return {
                     "status": "drift_already_active",
@@ -302,7 +308,8 @@ class GuardianEngine:
                 "expected_percentage": expected_pct,
                 "stored_state": stored_state,
                 "message": drift_msg,
-                "timestamp": data.get("timestamp") or time.time(),
+                "timestamp": data.get("timestamp") or now_ts,
+                "detected_at": now_ts,
             }
             self.drift_flags[flag_name] = drift_info
             self.storage.save_rollout_state(
