@@ -2,6 +2,8 @@
 FastAPI Server for Guardian.
 Provides REST endpoints for status inspection, operator actions, human approval,
 and multi-rollout management with SQLite state persistence.
+Hardened with request size limits, rate limiting, constant-time token comparison,
+and strict production environment mode enforcement.
 """
 
 from __future__ import annotations
@@ -11,17 +13,77 @@ import json
 import logging
 import os
 import secrets
-from typing import Any, Dict, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Security, Depends, status, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from guardian.engine import GuardianEngine
 from guardian.state_machine import RolloutState
 from guardian.status_page import STATUS_PAGE_HTML
 
 logger = logging.getLogger("guardian.api")
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Rejects request bodies exceeding maximum allowed byte size (413 Payload Too Large)."""
+    def __init__(self, app, max_content_length: int = 65536):
+        super().__init__(app)
+        self.max_content_length = max_content_length
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self.max_content_length:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Request entity too large. Maximum allowed size is {self.max_content_length} bytes."},
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
+
+
+class InMemoryRateLimiter:
+    """Thread-safe sliding-window rate limiter per client IP."""
+    def __init__(self, max_requests: int = 60, window_seconds: float = 60.0):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: Dict[str, List[float]] = {}
+        self.lock = threading.Lock()
+
+    def check(self, key: str) -> bool:
+        now = time.time()
+        with self.lock:
+            history = self.requests.setdefault(key, [])
+            cutoff = now - self.window_seconds
+            self.requests[key] = [t for t in history if t > cutoff]
+            if len(self.requests[key]) >= self.max_requests:
+                return False
+            self.requests[key].append(now)
+            return True
+
+
+write_rate_limiter = InMemoryRateLimiter(max_requests=60, window_seconds=60.0)
+
+
+async def rate_limit_write_endpoints(request: Request):
+    """Enforces basic rate limiting on write and webhook endpoints."""
+    # Allow test/demo override via GUARDIAN_RATE_LIMIT_PER_MINUTE
+    limit = int(os.environ.get("GUARDIAN_RATE_LIMIT_PER_MINUTE", "60"))
+    write_rate_limiter.max_requests = limit
+    client_ip = request.client.host if request.client else "unknown"
+    if not write_rate_limiter.check(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too Many Requests: Rate limit exceeded for write operations",
+            headers={"Retry-After": "60"},
+        )
 
 
 class ApproveRequest(BaseModel):
@@ -39,12 +101,19 @@ class ResetRequest(BaseModel):
     flag_name: Optional[str] = None
 
 
-def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastAPI:
+def create_app(
+    engine: GuardianEngine,
+    api_token: Optional[str] = None,
+    lifespan: Optional[Any] = None,
+) -> FastAPI:
     app = FastAPI(
         title="Guardian Service",
         description="Guarded Rollout Engine for Flagsmith",
         version="1.0.0",
+        lifespan=lifespan,
     )
+
+    app.add_middleware(RequestSizeLimitMiddleware, max_content_length=65536)
 
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -52,16 +121,34 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
         request: Request,
         auth: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
     ) -> bool:
+        # Security: Strictly forbid credentials/tokens in URL query parameters
+        for forbidden in ("token", "api_token", "key", "auth"):
+            if forbidden in request.query_params:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Unauthorized: Tokens in URL query parameters are forbidden. Pass credentials via 'Authorization: Bearer <token>' or 'X-Guardian-Token' header.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
         expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+
+        if is_prod and not expected_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: GUARDIAN_API_TOKEN must be configured in production mode.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         if not expected_token:
-            # Open mode: no authentication configured (local dev/demo)
+            # Open mode: no authentication configured (local dev/demo only)
             return True
 
-        # 1. Authorization: Bearer <token>
+        # 1. Authorization: Bearer <token> (constant-time compare)
         if auth and auth.credentials and secrets.compare_digest(auth.credentials, expected_token):
             return True
 
-        # 2. X-API-Token / X-Guardian-Token header
+        # 2. X-API-Token / X-Guardian-Token header (constant-time compare)
         header_token = request.headers.get("X-API-Token") or request.headers.get("X-Guardian-Token")
         if header_token and secrets.compare_digest(header_token, expected_token):
             return True
@@ -80,11 +167,15 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
     def health() -> Dict[str, str]:
         return {"status": "healthy", "service": "guardian"}
 
-    @app.post("/webhooks/flagsmith")
+    @app.post(
+        "/webhooks/flagsmith",
+        dependencies=[Depends(rate_limit_write_endpoints)],
+    )
     async def flagsmith_webhook(request: Request) -> Dict[str, Any]:
         """
         Receives and processes Flagsmith webhook events (FLAG_UPDATED).
         Validates X-Flagsmith-Signature using constant-time comparison when secret is configured.
+        In GUARDIAN_ENV=production, refuses requests if secret is missing (fails closed).
         """
         raw_body = await request.body()
         sig_header = (
@@ -92,6 +183,14 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
             or request.headers.get("x-flagsmith-signature")
         )
         secret = os.environ.get("FLAGSMITH_WEBHOOK_SECRET") or getattr(engine.config, "webhook_secret", None)
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+
+        if is_prod and not secret:
+            logger.warning("Rejected webhook in production: FLAGSMITH_WEBHOOK_SECRET is not configured (fail closed).")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Webhook rejected: FLAGSMITH_WEBHOOK_SECRET is not configured in production mode (failing closed)",
+            )
 
         if secret:
             if not sig_header:
@@ -111,6 +210,8 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
                 )
             print("✔ webhook signature verified (X-Flagsmith-Signature)")
             logger.info("✔ webhook signature verified (X-Flagsmith-Signature)")
+        else:
+            logger.info("ℹ [DEMO/OPEN MODE] Webhook processed without signature verification (no secret configured)")
 
         try:
             payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
@@ -136,7 +237,10 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
     ) -> Dict[str, Any]:
         return engine.get_status(flag_name=flag_name, full=full)
 
-    @app.post("/approve", dependencies=[Depends(verify_write_token)])
+    @app.post(
+        "/approve",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
     def approve(
         payload: Optional[ApproveRequest] = None,
         flag: Optional[str] = Query(None, alias="flag_name"),
@@ -171,7 +275,10 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    @app.post("/rollback", dependencies=[Depends(verify_write_token)])
+    @app.post(
+        "/rollback",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
     def manual_rollback(
         payload: Optional[RollbackRequest] = None,
         flag: Optional[str] = Query(None, alias="flag_name"),
@@ -194,7 +301,10 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
             "audit_entry": entry.to_dict(),
         }
 
-    @app.post("/reset", dependencies=[Depends(verify_write_token)])
+    @app.post(
+        "/reset",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
     def reset_rollout(
         payload: Optional[ResetRequest] = None,
         flag: Optional[str] = Query(None, alias="flag_name"),
@@ -215,7 +325,10 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    @app.post("/tick", dependencies=[Depends(verify_write_token)])
+    @app.post(
+        "/tick",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
     def trigger_tick(flag: Optional[str] = Query(None, alias="flag_name")) -> Dict[str, Any]:
         entry = engine.tick(flag_name=flag)
         return {

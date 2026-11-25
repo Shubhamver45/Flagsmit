@@ -265,13 +265,15 @@ Edit the generated `config.yaml` to specify your rollout stages, soak dwell time
 
 #### Step 3: Launch Guardian Daemon
 
-##### Option A: Run Pre-Built Docker Image from GHCR
+##### Option A: Run Pre-Built Docker Image from GHCR (Hardened Non-Root & Read-Only)
 ```bash
 docker volume create guardian-data
 
 docker run -d \
   --name flagsmith-guardian \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp \
   -v guardian-data:/app/data \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   --env-file .env \
@@ -281,18 +283,24 @@ docker run -d \
 ##### Option B: Run via Python CLI
 ```bash
 pip install -r requirements.txt
+# Defaults to binding 127.0.0.1 (loopback only) for security
 python3 -m guardian.main --port 8080 --interval 5
 ```
 
-##### Option C: Zero-Config Container (Pure Environment Variables)
+##### Option C: Zero-Config Container (Pure Environment Variables & Hardened Runtime)
 Guardian can run with **zero config files mounted**, using only environment variables and a persistent SQLite volume:
 ```bash
 docker volume create guardian-data
 
 docker run -d \
   --name flagsmith-guardian \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp \
   -v guardian-data:/app/data \
+  -e GUARDIAN_ENV="production" \
+  -e GUARDIAN_API_TOKEN="your_secure_api_token" \
+  -e FLAGSMITH_WEBHOOK_SECRET="your_webhook_secret" \
   -e FLAGSMITH_URL="http://localhost:8000/api/v1" \
   -e FLAGSMITH_ADMIN_API_KEY="your_admin_api_key" \
   -e FLAGSMITH_ENVIRONMENT_KEY="your_env_key" \
@@ -585,19 +593,34 @@ This project was built as a hackathon submission and there are things that are r
 | **Multi-flag Support** | Fully implemented. Multi-rollout configs (`guardian.config.GuardianConfig`) allow managing several flags simultaneously with per-flag state machines, independent metrics, and multi-card display on the status page. |
 | **Flagsmith Webhooks & Drift Detection** | Fully implemented (`POST /webhooks/flagsmith` with HMAC-SHA256 signature verification). Pauses rollout and alerts on out-of-band changes with dual-layer periodic polling backup. |
 | **Git history** | Early development commits contain local-only Flagsmith dev credentials (a self-hosted instance with no network exposure). These are harmless for a local demo setup but would need to be rotated and history-rewritten before connecting a real production Flagsmith deployment. |
-| **Docker image** | The root `Dockerfile` (Python 3.12-slim) builds and tests cleanly in CI, verified with health probes before publishing to GHCR. |
+| **Docker image** | The root `Dockerfile` runs as unprivileged user `guardian` (UID 10001) from pinned `python:3.12-slim` digest with a read-only root filesystem (`--read-only`) and dedicated writable volume at `/app/data`. Builds and tests cleanly in CI, verified with health probes before publishing to GHCR. |
 
 ---
 
-## Security & Demo Endpoints Notice
+## Security & Hardening Reference
 
-### API Token Protection for Write Endpoints
-Guardian's write endpoints (`POST /approve`, `POST /rollback`, `POST /reset`, `POST /tick`) support token-based authentication via the `GUARDIAN_API_TOKEN` environment variable:
-* **Production**: Set `GUARDIAN_API_TOKEN=<token>` in your environment. All write requests must include either `Authorization: Bearer <token>` or `X-API-Token: <token>`. Unauthenticated or invalid requests receive `401 Unauthorized`.
-* **Local Development / Demo**: If `GUARDIAN_API_TOKEN` is unset or empty, authentication is disabled so demo scripts can run without credential friction.
-* **CLI & Scripts**: Pass `--token <token>` to the `guardian` CLI or export `GUARDIAN_API_TOKEN` for `scripts/guardian-approve.sh`.
+Guardian implements defence-in-depth principles across its container, networking, authentication, and logging layers:
 
-### ⚠️ Demo Endpoints are for Demo Use Only
+### 1. Ingress Binding & Network Isolation
+* **Default Loopback Binding**: When executed directly or via the CLI, Guardian defaults to binding `127.0.0.1` (loopback only) rather than `0.0.0.0`.
+* **Docker Port Mapping**: For containerized deployments, map strictly to localhost using `-p 127.0.0.1:8080:8080`. Never expose administrative endpoints publicly without an authenticating reverse proxy.
+* **Separation of Concerns**:
+  - **Webhook Endpoint (`POST /webhooks/flagsmith`)**: Protected cryptographically by `X-Flagsmith-Signature` HMAC-SHA256 signature verification.
+  - **Admin & Write Endpoints (`POST /approve`, `/rollback`, `/reset`, `/tick`)**: Protected by bearer tokens via `GUARDIAN_API_TOKEN`.
+
+### 2. Strict Production Mode (`GUARDIAN_ENV=production`)
+* **Startup Refusal**: In production mode (`GUARDIAN_ENV=production`), Guardian strictly refuses to boot if `GUARDIAN_API_TOKEN` is unset or empty (`exit 1`), preventing accidental fail-open deployments.
+* **Fail-Closed Webhooks**: In production mode, incoming webhooks require `FLAGSMITH_WEBHOOK_SECRET` to be configured. Any webhook received without a configured secret is rejected with `401 Unauthorized`.
+* **Demo Mode Labeling**: In local demonstration mode (`DEMO_MODE=1` or unset `GUARDIAN_ENV`), open developer access and synthetic shortcuts are visibly labeled in logs and UI as `[DEMO MODE ACTIVE]`.
+
+### 3. Rate Limiting, Request Size Caps & URL Credential Hygiene
+* **Rate Limiting**: Write endpoints enforce sliding-window rate limiting per client IP (default 60 requests/minute, configurable via `GUARDIAN_RATE_LIMIT_PER_MINUTE`), returning `429 Too Many Requests` on abuse.
+* **Request Size Limits**: Body payloads are capped at 64 KB, returning `413 Payload Too Large` to prevent denial-of-service memory exhaustion.
+* **Tokens in URLs Forbidden**: Passing API tokens in query parameters (`?token=...`, `?key=...`) is strictly rejected with `400 Bad Request`. Credentials must be transmitted via headers (`Authorization: Bearer <token>` or `X-Guardian-Token`).
+* **Constant-Time Verification**: All token strings and HMAC webhook signatures are compared using `secrets.compare_digest` to eliminate timing side-channels.
+* **Secret Redaction**: Configured secrets, API keys, and admin passwords are automatically scrubbed and redacted (`[REDACTED]`) from application and server logs.
+
+### 4. ⚠️ Demo Endpoints are for Demo Use Only
 Several endpoints across the project exist **exclusively for local evaluation and interactive rehearsals**:
 * **Guardian**: `POST /reset` and `POST /tick` allow test harnesses to manually step the state machine or reset a rollout to `PENDING`.
 * **Demo App**: `POST /toggle-bug` and `POST /reset-metrics` allow manual fault injection and Prometheus counter clearing.

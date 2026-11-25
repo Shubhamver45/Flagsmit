@@ -559,7 +559,10 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         document.getElementById('exp-as-of').innerText = 'results computed by Flagsmith from events sent by the demo app, as of ' + asOfStr + shortcutTag;
 
         const cwEl = document.getElementById('exp-chance-worse');
-        if (exp.is_collecting_data || exp.chance_to_be_worse === null || exp.chance_to_be_worse === undefined) {
+        if (exp.srm_warning) {
+          cwEl.innerText = 'n/a (not evaluated: SRM)';
+          cwEl.style.color = '#f87171';
+        } else if (exp.is_collecting_data || exp.chance_to_be_worse === null || exp.chance_to_be_worse === undefined) {
           cwEl.innerText = 'n/a (collecting data)';
           cwEl.style.color = '#fbbf24';
         } else {

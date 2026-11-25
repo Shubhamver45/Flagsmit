@@ -2,15 +2,19 @@
 Guardian Main Daemon Service.
 Runs the FastAPI status server and periodic background evaluation loop.
 Supports multi-rollout configurations, SQLite persistence, and startup reconciliation.
+Hardened for production with strict environment enforcement, non-root operation,
+default loopback binding, and secret redacting logging.
 """
 
 from __future__ import annotations
 import argparse
 import asyncio
+import logging
 import os
 import sys
 import time
 import uvicorn
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -24,6 +28,49 @@ from guardian.metrics.registry import CompositeMetricProvider
 from guardian.storage import GuardianStorage
 from guardian.engine import GuardianEngine
 from guardian.api import create_app
+
+
+class SecretRedactingFilter(logging.Filter):
+    """Filters log records to ensure credentials, tokens, and secrets are never logged."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        secrets_to_redact = []
+        for env_var in (
+            "GUARDIAN_API_TOKEN",
+            "GUARDIAN_TOKEN",
+            "FLAGSMITH_ADMIN_API_KEY",
+            "FLAGSMITH_WEBHOOK_SECRET",
+            "ADMIN_PASSWORD",
+        ):
+            val = os.environ.get(env_var)
+            if val and len(val) >= 4:
+                secrets_to_redact.append(val)
+
+        if isinstance(record.msg, str):
+            for s in secrets_to_redact:
+                if s in record.msg:
+                    record.msg = record.msg.replace(s, "[REDACTED]")
+        return True
+
+
+def configure_security_logging() -> None:
+    redactor = SecretRedactingFilter()
+    logging.getLogger().addFilter(redactor)
+    logging.getLogger("guardian").addFilter(redactor)
+    logging.getLogger("uvicorn").addFilter(redactor)
+
+
+def check_production_safety() -> None:
+    """Enforces fail-safe invariants in GUARDIAN_ENV=production."""
+    env_mode = os.environ.get("GUARDIAN_ENV", "").strip().lower()
+    if env_mode == "production":
+        token = os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
+        if not token:
+            print(
+                "❌ FATAL [GUARDIAN_ENV=production]: Refusing to start without GUARDIAN_API_TOKEN. "
+                "Production deployments strictly require an API token for administrative endpoints.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 
 def load_env_file(filepath: str = ".env") -> None:
@@ -74,6 +121,7 @@ def build_engine(
     storage: Optional[GuardianStorage] = None,
 ) -> GuardianEngine:
     load_env_file()
+    check_production_safety()
 
     flagsmith_url = os.environ.get("FLAGSMITH_URL", "http://localhost:8000/api/v1")
     admin_api_key = os.environ.get("FLAGSMITH_ADMIN_API_KEY", "")
@@ -156,34 +204,61 @@ def build_engine(
 
 def run_server(
     config_path: str = "config.yaml",
-    host: str = "0.0.0.0",
+    host: Optional[str] = None,
     port: int = 8080,
     interval: float = 5.0,
     reconcile_interval: Optional[float] = None,
     demo_mode: bool = False,
     demo_soak: Optional[int] = None,
 ):
+    load_env_file()
+    check_production_safety()
+    configure_security_logging()
+
     engine = build_engine(config_path, demo_mode=demo_mode, demo_soak=demo_soak)
-    app = create_app(engine)
+
+    is_demo = demo_mode or (os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"))
+    if host is None:
+        if is_demo:
+            bind_host = "0.0.0.0"
+        else:
+            bind_host = "127.0.0.1"
+    else:
+        bind_host = host
 
     if reconcile_interval is None:
-        default_reconcile = 2.0 if (demo_mode or os.environ.get("DEMO_MODE") in ("1", "true")) else 10.0
+        default_reconcile = 2.0 if is_demo else 10.0
         reconcile_interval = getattr(
             engine.config,
             "reconcile_interval_seconds",
             float(os.environ.get("GUARDIAN_RECONCILE_INTERVAL_SECONDS", default_reconcile)),
         )
 
-    @app.on_event("startup")
-    async def startup_event():
-        asyncio.create_task(background_ticker(engine, interval=interval))
-        asyncio.create_task(background_reconciler(engine, interval=reconcile_interval))
+    # Lifespan event handler replacing deprecated @app.on_event("startup")
+    @asynccontextmanager
+    async def lifespan(app_instance):
+        ticker_task = asyncio.create_task(background_ticker(engine, interval=interval))
+        reconciler_task = asyncio.create_task(background_reconciler(engine, interval=reconcile_interval))
+        try:
+            yield
+        finally:
+            ticker_task.cancel()
+            reconciler_task.cancel()
+            await asyncio.gather(ticker_task, reconciler_task, return_exceptions=True)
 
+    app = create_app(engine, lifespan=lifespan)
+
+    env_mode = os.environ.get("GUARDIAN_ENV", "development").strip().lower()
     flag_names = list(engine.rollout_configs.keys())
     print(f"\n========================================================")
-    print(f"🛡️  Guardian Service Starting")
-    print(f"   Status Page : http://localhost:{port}/")
-    print(f"   REST API    : http://localhost:{port}/status")
+    print(f"🛡️  Guardian Service Starting ({env_mode} mode)")
+    if env_mode == "production":
+        print(f"   🔒 Security Mode : STRICT (GUARDIAN_ENV=production)")
+        print(f"   🔒 Ingress Bind  : {bind_host}:{port} (Loopback protection)")
+    else:
+        print(f"   ℹ Ingress Bind  : {bind_host}:{port}")
+    print(f"   Status Page : http://{bind_host}:{port}/")
+    print(f"   REST API    : http://{bind_host}:{port}/status")
     print(f"   Database    : {engine.storage.db_path}")
     print(f"   Rollouts ({len(flag_names)}) : {', '.join(flag_names)}")
     print(f"   Primary Flag: {engine.config.flag_name}")
@@ -191,13 +266,13 @@ def run_server(
     print(f"   Soak Time   : {engine.config.soak_time_seconds}s per stage")
     print(f"========================================================\n")
 
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(app, host=bind_host, port=port, log_level="warning")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Guardian Guarded Rollout Service")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
-    parser.add_argument("--host", default="0.0.0.0", help="Host address (default: 0.0.0.0)")
+    parser.add_argument("--host", default=None, help="Host address (default: 127.0.0.1; 0.0.0.0 in demo mode)")
     parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
     parser.add_argument("--interval", type=float, default=3.0, help="Evaluation tick interval seconds (default: 3.0)")
     parser.add_argument("--reconcile-interval", type=float, default=None, help="Reconciliation poll interval seconds (default: 10.0)")
