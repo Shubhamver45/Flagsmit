@@ -149,14 +149,14 @@ def checkout():
 
     if EXPERIMENT_MODE == "worse":
         if exp_variant == "control":
-            should_convert = (user_rand < 0.60)
+            should_convert = (user_rand < 0.65)
         else:
-            should_convert = (user_rand < 0.35)
+            should_convert = (user_rand < 0.25)
     elif EXPERIMENT_MODE == "winner":
         if exp_variant == "control":
-            should_convert = (user_rand < 0.35)
+            should_convert = (user_rand < 0.25)
         else:
-            should_convert = (user_rand < 0.60)
+            should_convert = (user_rand < 0.75)
     else:
         if exp_variant == "control":
             should_convert = (user_rand < 0.35)

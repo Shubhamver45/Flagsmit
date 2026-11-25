@@ -436,11 +436,11 @@ fi
 
 echo ""
 echo "--- Phase 3: Happy-Path Decisive Winner Scenario & Human Operator Promotion ---"
-echo "Setting experiment mode to 'winner' (per-identity conversion: control ~35%, variation ~60%)..."
+echo "Setting experiment mode to 'winner' (per-identity conversion: control ~25%, variation ~75%)..."
 echo "ℹ Verifying gate clearance under require_winner: true (chance to win >= 95.0% and 95% CI low > 0.0, no SRM)."
 curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=winner" | python3 -m json.tool
 echo "Generating traffic for winner variation demonstrating positive lift..."
-PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 600 --identities 500 > /dev/null
+PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 700 --identities 600 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
 
