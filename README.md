@@ -134,7 +134,7 @@ In Flagsmith Admin UI under **Settings ➔ Webhooks**, add an Environment Webhoo
 When stages complete and the experiment gate passes:
 ```bash
 curl -X POST http://127.0.0.1:8080/approve \
-  -H "Authorization: Bearer your-secure-admin-token" \
+  -H "Authorization: Bearer $GUARDIAN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"flag_name": "new_feature", "approved_by": "release-lead", "reason": "Experiment verified positive lift, no SRM"}'
 ```
