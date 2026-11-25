@@ -49,6 +49,7 @@ wait_for_url() {
 # Ensure no leftover background processes from previous interrupted runs
 pkill -f "guardian.main" 2>/dev/null || true
 pkill -f "demo/simulator.py" 2>/dev/null || true
+rm -f ./data/guardian.db ./data/guardian.db-wal ./data/guardian.db-shm /tmp/guardian_drift_start.txt
 
 # 1. Start core infrastructure
 echo "==> Step 1: Starting Flagsmith, PostgreSQL, Task Processor, and Prometheus..."
