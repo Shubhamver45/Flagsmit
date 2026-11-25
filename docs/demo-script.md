@@ -33,7 +33,7 @@ Open the following browser tabs (or split-screen layout):
 > 
 > *Guardian is configured with a staged rollout pipeline: 1%, 5%, 25%, and 100%, with automated guardrails and human approval.*  
 > 
-> *In the background, our simulator is sending live traffic across hundreds of distinct user identities (with simulated conversion rates: ~65% control, ~95% variation to model positive conversion lift).*  
+> *In the background, our simulator is sending live traffic across hundreds of distinct user identities (with deterministic per-identity conversion tracking).*  
 > 
 > *Guardian advances from 1% to 5%, and then to 25%. In Flagsmith, you can see the multivariate allocation updating live through the Admin API.*  
 > 

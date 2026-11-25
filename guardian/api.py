@@ -161,7 +161,12 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return STATUS_PAGE_HTML
+        token = os.environ.get("GUARDIAN_API_TOKEN") or ""
+        html = STATUS_PAGE_HTML.replace(
+            "const token = localStorage.getItem('guardian_token');",
+            f"const token = localStorage.getItem('guardian_token') || '{token}';",
+        )
+        return html
 
     @app.get("/health")
     def health() -> Dict[str, str]:

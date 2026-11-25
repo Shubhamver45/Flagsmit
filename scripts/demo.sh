@@ -133,6 +133,17 @@ else
     exit 1
 fi
 
+echo "==> Verifying Guardian write endpoint authentication in demo mode (unauthenticated POST /approve must return 401):"
+UNAUTH_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://localhost:8080/approve" \
+  -H "Content-Type: application/json" \
+  -d '{"approved_by": "unauthenticated-attacker"}')
+if [ "$UNAUTH_HTTP_CODE" = "401" ]; then
+    echo "  ✔ Unauthenticated POST /approve returned HTTP 401 Unauthorized as expected"
+else
+    echo "  ❌ Error: Expected HTTP 401, got HTTP ${UNAUTH_HTTP_CODE}"
+    exit 1
+fi
+
 if [ "$SERVE_MODE" -eq 1 ]; then
     echo "Running in SERVE mode. Press Ctrl+C to stop."
     wait

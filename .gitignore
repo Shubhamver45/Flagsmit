@@ -62,3 +62,4 @@ clickhouse_data/
 # IDE
 .idea/
 .vscode/
+*.log
