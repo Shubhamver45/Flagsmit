@@ -192,7 +192,8 @@ class GuardianEngine:
 
         sm = self.state_machines[flag_name]
         saved = self.storage.load_rollout_state(flag_name)
-        expected_pct = saved["current_percentage"] if saved else sm.current_percentage
+        stored_pct = saved["current_percentage"] if saved else sm.current_percentage
+        sm_pct = sm.current_percentage
         stored_state = saved["current_state"] if saved else sm.current_state
 
         is_enabled = bool(new_state.get("enabled", False))
@@ -207,10 +208,18 @@ class GuardianEngine:
 
         # Check if standard boolean flag match
         is_standard_flag_match = False
-        if not mv_values and is_enabled and expected_pct > 0.0:
+        if not mv_values and is_enabled and (stored_pct > 0.0 or sm_pct > 0.0):
             is_standard_flag_match = True
 
-        if is_standard_flag_match or abs(actual_pct - expected_pct) <= 0.01:
+        matches_expected = (
+            is_standard_flag_match
+            or abs(actual_pct - stored_pct) <= 0.01
+            or abs(actual_pct - sm_pct) <= 0.01
+        )
+
+        expected_pct = sm_pct if abs(actual_pct - sm_pct) <= 0.01 else stored_pct
+
+        if matches_expected:
             if self.drift_flags.get(flag_name, {}).get("detected"):
                 logger.info(f"✔ Drift resolved via webhook for flag '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%).")
                 self.drift_flags[flag_name] = {"detected": False}
@@ -290,7 +299,8 @@ class GuardianEngine:
         for flag_name, rc in self.rollout_configs.items():
             sm = self.state_machines[flag_name]
             saved = self.storage.load_rollout_state(flag_name)
-            expected_pct = saved["current_percentage"] if saved else sm.current_percentage
+            stored_pct = saved["current_percentage"] if saved else sm.current_percentage
+            sm_pct = sm.current_percentage
             stored_state = saved["current_state"] if saved else sm.current_state
 
             try:
@@ -300,7 +310,7 @@ class GuardianEngine:
                 continue
 
             is_standard_flag_match = False
-            if real_pct == 100.0 and expected_pct > 0.0 and hasattr(self.flagsmith_client, "get_environment_feature_state"):
+            if real_pct == 100.0 and (stored_pct > 0.0 or sm_pct > 0.0) and hasattr(self.flagsmith_client, "get_environment_feature_state"):
                 try:
                     fs = self.flagsmith_client.get_environment_feature_state(flag_name)
                     if isinstance(fs, dict) and not fs.get("multivariate_feature_state_values"):
@@ -308,7 +318,13 @@ class GuardianEngine:
                 except Exception:
                     pass
 
-            has_drift = not is_standard_flag_match and abs(real_pct - expected_pct) > 0.01
+            matches_expected = (
+                is_standard_flag_match
+                or abs(real_pct - stored_pct) <= 0.01
+                or abs(real_pct - sm_pct) <= 0.01
+            )
+            has_drift = not matches_expected
+            expected_pct = sm_pct if abs(real_pct - sm_pct) <= 0.01 else stored_pct
 
             if has_drift:
                 current_drift = self.drift_flags.get(flag_name, {})
@@ -476,8 +492,21 @@ class GuardianEngine:
         )
 
         if should_run:
+            pct = sm.current_percentage
+            # Persist updated rollout state to SQLite FIRST before remote Flagsmith write
+            self.storage.save_rollout_state(
+                flag_name=flag_name,
+                current_state=new_state,
+                current_stage_index=sm.current_stage_index,
+                stage_entered_at=sm.stage_entered_at,
+                current_percentage=pct,
+                is_approved=sm.is_approved,
+                drift_detected=False,
+                drift_details=None,
+                now=now,
+            )
+
             if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
-                pct = sm.current_percentage
                 self.flagsmith_client.set_percentage_rollout(flag_name, pct)
             elif decision == RolloutDecision.ROLLBACK:
                 self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
@@ -488,19 +517,19 @@ class GuardianEngine:
                 to_state=new_state,
                 stage_index=stage_idx,
             )
-
-        # Persist updated rollout state to SQLite
-        self.storage.save_rollout_state(
-            flag_name=flag_name,
-            current_state=new_state,
-            current_stage_index=sm.current_stage_index,
-            stage_entered_at=sm.stage_entered_at,
-            current_percentage=sm.current_percentage,
-            is_approved=sm.is_approved,
-            drift_detected=False,
-            drift_details=None,
-            now=now,
-        )
+        else:
+            # Persist updated rollout state to SQLite
+            self.storage.save_rollout_state(
+                flag_name=flag_name,
+                current_state=new_state,
+                current_stage_index=sm.current_stage_index,
+                stage_entered_at=sm.stage_entered_at,
+                current_percentage=sm.current_percentage,
+                is_approved=sm.is_approved,
+                drift_detected=False,
+                drift_details=None,
+                now=now,
+            )
 
         entry = self.audit_logger.record(
             flag_name=flag_name,
