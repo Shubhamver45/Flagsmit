@@ -56,6 +56,17 @@ async def background_ticker(engine: GuardianEngine, interval: float = 5.0) -> No
         await asyncio.sleep(interval)
 
 
+async def background_reconciler(engine: GuardianEngine, interval: float = 10.0) -> None:
+    """Periodic flag reconciliation worker in the background running non-blocking in worker thread."""
+    print(f"🛡️  Guardian background reconciliation worker active (interval: {interval}s)")
+    while True:
+        try:
+            await asyncio.to_thread(engine.reconcile_runtime)
+        except Exception as e:
+            print(f"⚠️  Guardian reconciliation error: {e}", file=sys.stderr)
+        await asyncio.sleep(interval)
+
+
 def build_engine(
     config_path: str = "config.yaml",
     demo_mode: bool = False,
@@ -148,15 +159,20 @@ def run_server(
     host: str = "0.0.0.0",
     port: int = 8080,
     interval: float = 5.0,
+    reconcile_interval: Optional[float] = None,
     demo_mode: bool = False,
     demo_soak: Optional[int] = None,
 ):
     engine = build_engine(config_path, demo_mode=demo_mode, demo_soak=demo_soak)
     app = create_app(engine)
 
+    if reconcile_interval is None:
+        reconcile_interval = float(os.environ.get("GUARDIAN_RECONCILE_INTERVAL_SECONDS", "10.0"))
+
     @app.on_event("startup")
     async def startup_event():
         asyncio.create_task(background_ticker(engine, interval=interval))
+        asyncio.create_task(background_reconciler(engine, interval=reconcile_interval))
 
     flag_names = list(engine.rollout_configs.keys())
     print(f"\n========================================================")
@@ -179,6 +195,7 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="Host address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
     parser.add_argument("--interval", type=float, default=3.0, help="Evaluation tick interval seconds (default: 3.0)")
+    parser.add_argument("--reconcile-interval", type=float, default=None, help="Reconciliation poll interval seconds (default: 10.0)")
     parser.add_argument("--demo-mode", action="store_true", help="Enable accelerated demo mode with fast soak times")
     parser.add_argument("--demo-soak", type=int, default=None, help="Soak time in seconds when in demo mode (default: 5)")
 
@@ -188,6 +205,7 @@ def main():
         host=args.host,
         port=args.port,
         interval=args.interval,
+        reconcile_interval=args.reconcile_interval,
         demo_mode=args.demo_mode,
         demo_soak=args.demo_soak,
     )

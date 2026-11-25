@@ -243,9 +243,107 @@ except Exception as e:
 }
 
 echo ""
-echo "--- Phase 1: Progressive Rollout Advancing to Awaiting Approval ---"
+echo "--- Phase 1: Progressive Rollout & Mid-Rollout Drift Detection ---"
 echo "Flag 'new_checkout' is advancing through stages under healthy error rate (< 5.0%)..."
 wait_for_state "STAGE_1" 20
+
+echo ""
+echo "--- Mid-Rollout Scenario: Out-of-Band State Change & Real-Time Drift Detection ---"
+echo "Simulating external operator altering 'new_checkout' to 50% via Admin API..."
+python3 -c "
+import os, requests
+from dotenv import dotenv_values
+env = dotenv_values('.env')
+api_url = env.get('FLAGSMITH_URL', 'http://localhost:8000/api/v1')
+headers = {'Authorization': f'Api-Key {env.get(\"FLAGSMITH_ADMIN_API_KEY\", \"\")}', 'Content-Type': 'application/json'}
+env_key = env.get('FLAGSMITH_ENVIRONMENT_KEY', '')
+fs_resp = requests.get(f'{api_url}/environments/{env_key}/featurestates/?q=new_checkout', headers=headers)
+fs_list = fs_resp.json().get('results', [])
+if fs_list:
+    fs = fs_list[0]
+    mv_values = fs.get('multivariate_feature_state_values', [])
+    if mv_values:
+        requests.patch(f'{api_url}/features/featurestates/{fs[\"id\"]}/', headers=headers, json={
+            'environment': fs['environment'],
+            'enabled': True,
+            'multivariate_feature_state_values': [{
+                'id': mv_values[0]['id'],
+                'multivariate_feature_option': mv_values[0]['multivariate_feature_option'],
+                'percentage_allocation': 50.0,
+            }],
+        }).raise_for_status()
+    else:
+        requests.patch(f'{api_url}/features/featurestates/{fs[\"id\"]}/', headers=headers, json={
+            'environment': fs['environment'],
+            'enabled': False,
+        }).raise_for_status()
+    print('  ✔ External operator changed flag to 50% in Flagsmith (triggering real-time webhook to Guardian)')
+"
+sleep 2
+
+echo "Verifying Guardian detects drift, pauses rollout, and surfaces drift alert:"
+DRIFT_DETECTED=0
+for i in $(seq 1 12); do
+    DRIFT_INFO=$(python3 -c "
+import urllib.request, json
+try:
+    s = json.loads(urllib.request.urlopen('http://localhost:8080/status', timeout=3).read())
+    d = s.get('drift', {})
+    if d.get('detected'):
+        print(f\"DETECTED|{d.get('source')}|{d.get('changed_by')}|{d.get('message')}\")
+    else:
+        print('NONE')
+except Exception as e:
+    print('ERR:', e)
+")
+    if [[ "$DRIFT_INFO" == DETECTED* ]]; then
+        DRIFT_DETECTED=1
+        IFS='|' read -r _ SRC CHANGED_BY MSG <<< "$DRIFT_INFO"
+        echo "  ⚠️  [DRIFT DETECTED] Guardian paused rollout execution within seconds!"
+        echo "  • Detection Source: $SRC"
+        echo "  • Modified By     : $CHANGED_BY"
+        echo "  • Drift Details   : $MSG"
+        break
+    fi
+    sleep 1
+done
+
+if [ "$DRIFT_DETECTED" -ne 1 ]; then
+    echo "❌ Drift was not detected by Guardian!"
+    exit 1
+fi
+
+echo "Resolving drift: Restoring flag allocation back to STAGE_1 (1.0%) in Flagsmith:"
+python3 -c "
+import os, requests
+from dotenv import dotenv_values
+env = dotenv_values('.env')
+api_url = env.get('FLAGSMITH_URL', 'http://localhost:8000/api/v1')
+headers = {'Authorization': f'Api-Key {env.get(\"FLAGSMITH_ADMIN_API_KEY\", \"\")}', 'Content-Type': 'application/json'}
+env_key = env.get('FLAGSMITH_ENVIRONMENT_KEY', '')
+fs_resp = requests.get(f'{api_url}/environments/{env_key}/featurestates/?q=new_checkout', headers=headers)
+fs = fs_resp.json()['results'][0]
+mv_values = fs.get('multivariate_feature_state_values', [])
+if mv_values:
+    requests.patch(f'{api_url}/features/featurestates/{fs[\"id\"]}/', headers=headers, json={
+        'environment': fs['environment'],
+        'enabled': True,
+        'multivariate_feature_state_values': [{
+            'id': mv_values[0]['id'],
+            'multivariate_feature_option': mv_values[0]['multivariate_feature_option'],
+            'percentage_allocation': 1.0,
+        }],
+    }).raise_for_status()
+else:
+    requests.patch(f'{api_url}/features/featurestates/{fs[\"id\"]}/', headers=headers, json={
+        'environment': fs['environment'],
+        'enabled': True,
+    }).raise_for_status()
+print('  ✔ Restored flag allocation to 1% in Flagsmith (drift auto-resolved)')
+"
+sleep 2
+
+echo "Advancing through remaining stages to Awaiting Approval..."
 wait_for_state "AWAITING_APPROVAL" 35
 
 echo ""

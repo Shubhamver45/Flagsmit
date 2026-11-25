@@ -322,6 +322,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         <div>
           <strong style="color: #f87171; font-size: 15px; letter-spacing: 0.5px;">DRIFT WARNING DETECTED</strong>
           <div id="drift-message" style="margin-top: 4px; color: #fecaca; font-size: 13px;"></div>
+          <div id="drift-meta" style="margin-top: 6px; color: #fca5a5; font-size: 12px; font-family: var(--font-mono);"></div>
           <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted);">
             Guardian is safely holding rollout execution to prevent unintended state changes. Verify in Flagsmith or trigger an operator Reset.
           </div>
@@ -483,6 +484,13 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       if (drift && drift.detected) {
         driftBanner.style.display = 'block';
         document.getElementById('drift-message').innerText = drift.message || 'Flagsmith actual flag percentage differs from stored state.';
+        const changedByStr = drift.changed_by ? `Changed by: ${drift.changed_by}` : '';
+        const sourceStr = drift.source ? `Source: ${drift.source}` : '';
+        const diffStr = (drift.expected_percentage !== undefined && drift.actual_percentage !== undefined)
+          ? `Expected: ${drift.expected_percentage}% | Received: ${drift.actual_percentage}%`
+          : '';
+        const metaParts = [changedByStr, sourceStr, diffStr].filter(Boolean);
+        document.getElementById('drift-meta').innerText = metaParts.join(' • ');
         document.getElementById('state-display').innerText = 'DRIFT DETECTED';
         document.getElementById('state-display').style.color = '#ef4444';
       } else {

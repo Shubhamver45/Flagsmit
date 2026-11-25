@@ -264,9 +264,12 @@ Edit the generated `config.yaml` to specify your rollout stages, soak dwell time
 
 ##### Option A: Run Pre-Built Docker Image from GHCR
 ```bash
+docker volume create guardian-data
+
 docker run -d \
   --name flagsmith-guardian \
   -p 8080:8080 \
+  -v guardian-data:/app/data \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   --env-file .env \
   ghcr.io/shubhamver45/flagsmith-guardian:latest
@@ -279,11 +282,14 @@ python3 -m guardian.main --port 8080 --interval 5
 ```
 
 ##### Option C: Zero-Config Container (Pure Environment Variables)
-Guardian can run with **zero config files mounted**, using only environment variables:
+Guardian can run with **zero config files mounted**, using only environment variables and a persistent SQLite volume:
 ```bash
+docker volume create guardian-data
+
 docker run -d \
   --name flagsmith-guardian \
   -p 8080:8080 \
+  -v guardian-data:/app/data \
   -e FLAGSMITH_URL="http://localhost:8000/api/v1" \
   -e FLAGSMITH_ADMIN_API_KEY="your_admin_api_key" \
   -e FLAGSMITH_ENVIRONMENT_KEY="your_env_key" \
@@ -328,6 +334,9 @@ All core settings can be passed or overridden via environment variables:
 | `REQUIRE_APPROVAL` | `true` | Gate final promotion behind human signoff. |
 | `SLACK_WEBHOOK_URL` | *(None)* | Optional Slack incoming webhook URL for BlockKit alerts. |
 | `GENERIC_WEBHOOK_URL` | *(None)* | Optional HTTP webhook endpoint for JSON rollout events. |
+| `FLAGSMITH_WEBHOOK_SECRET` | *(None)* | Secret used to verify incoming Flagsmith HMAC-SHA256 webhook signatures (`X-Flagsmith-Signature`). |
+| `GUARDIAN_DB_PATH` | `./data/guardian.db` | File path for persistent SQLite state, audit trail, and experiment cache. |
+| `GUARDIAN_RECONCILE_INTERVAL_SECONDS` | `10.0` | Polling interval (seconds) for background runtime state reconciliation against Flagsmith. |
 | `GUARDIAN_API_TOKEN` | *(None)* | Optional bearer token securing Guardian write endpoints (`/approve`, `/rollback`, `/reset`). |
 
 ---
@@ -506,6 +515,55 @@ python3 -m pytest -v tests/
 
 ---
 
+## Webhook Integration & Real-Time Drift Detection
+
+Guardian actively catches out-of-band flag modifications (operator human error or external scripts bypassing Guardian) using a two-tier protection model: **real-time Flagsmith webhooks** combined with **periodic background polling**.
+
+### 1. Persistent SQLite State (`-v guardian-data:/app/data`)
+Guardian stores rollout progress, stage enter timestamps, audit logs, idempotency deduplication keys, and experiment metrics in a persistent SQLite database (`./data/guardian.db`).
+When running Guardian in Docker, ensure persistent state survives container restarts and upgrades by mounting a volume:
+```bash
+docker volume create guardian-data
+
+docker run -d \
+  --name flagsmith-guardian \
+  -p 8080:8080 \
+  -v guardian-data:/app/data \
+  --env-file .env \
+  ghcr.io/shubhamver45/flagsmith-guardian:latest
+```
+
+### 2. Flagsmith Environment Webhook Registration
+Guardian exposes an endpoint at `POST /webhooks/flagsmith` that validates incoming requests with HMAC-SHA256 signatures via the `X-Flagsmith-Signature` header (verified using constant-time string comparison `hmac.compare_digest`).
+
+#### Setting Up the Webhook in Flagsmith (Non-Demo / Production)
+1. **Set Shared Secret**: Add `FLAGSMITH_WEBHOOK_SECRET=<secret>` to your Guardian environment (`.env`).
+2. **Register via Flagsmith UI**:
+   - Go to your Project ➔ Select Environment ➔ Settings ➔ **Webhooks**.
+   - Click **Create Webhook**.
+   - URL: `https://guardian.your-domain.com/webhooks/flagsmith`
+   - Secret: Enter your `FLAGSMITH_WEBHOOK_SECRET`.
+   - Enabled: `true`.
+3. **Register via Flagsmith Admin REST API**:
+   ```bash
+   curl -X POST "https://flagsmith.your-domain.com/api/v1/environments/{ENVIRONMENT_KEY}/webhooks/" \
+     -H "Authorization: Api-Key {ADMIN_API_KEY}" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "url": "https://guardian.your-domain.com/webhooks/flagsmith",
+       "secret": "your_secure_webhook_secret",
+       "enabled": true
+     }'
+   ```
+*(Note: In the automated local demo, `scripts/setup_flagsmith.py` automatically registers this webhook pointing to `http://host.docker.internal:8080/webhooks/flagsmith`).*
+
+### 3. How Drift Detection & Protection Operates
+* **Instant Out-of-Band Pause**: When an operator alters a flag percentage directly in Flagsmith or disables it out-of-band, Flagsmith dispatches a `FLAG_UPDATED` webhook. Guardian verifies the cryptographic signature, compares the actual state to SQLite, flags **DRIFT**, halts stage progression, identifies the modifier (`changed_by`), and updates the status dashboard.
+* **Dual-Layer Polling Backup**: Because webhooks can experience delivery drops or network partitions, Guardian runs a background reconciler every $N$ seconds (configurable via `GUARDIAN_RECONCILE_INTERVAL_SECONDS`, default 10s) that queries Flagsmith directly. Drift identified via polling behaves identically to webhook drift.
+* **Self-Write Immunity**: Guardian's own automated stage promotions write expected state to SQLite during execution. When Flagsmith echoes the update back to Guardian, Guardian confirms the percentage matches expected state and ignores it without false drift alarms.
+
+---
+
 ## Honest Limitations
 
 This project was built as a hackathon submission and there are things that are real and things that are not yet production-ready. Here is a candid list:
@@ -517,11 +575,11 @@ This project was built as a hackathon submission and there are things that are r
 | **ClickHouse vs. PostgreSQL Warehouse** | ClickHouse is not used. Flagsmith self-hosted experimentation runs on Flagsmith's native PostgreSQL database warehouse (`experimentation_sdkexperimentationevent`). ClickHouse was removed from `docker-compose.yml` to eliminate unused overhead. |
 | **Recalculation throttle (`DEMO_FORCE_RECALC`)** | Flagsmith's public API throttles experiment recalculation to once every 300 seconds. For rapid demo runs (< 3 minutes), `DEMO_FORCE_RECALC=1` accelerates calculation via Flagsmith's background task processor and is clearly labeled as `(demo shortcut)`. |
 | **Webhook alerts (Slack / generic)** | Fire only when `SLACK_WEBHOOK_URL` or `GENERIC_WEBHOOK_URL` are set in `.env`. Not configured in the default demo setup. |
-| **Idempotency persistence** | Idempotency keys are stored in-memory. A Guardian restart will re-fire actions once. Production use should persist the idempotency store to disk or Redis. |
-| **Audit log persistence** | The append-only audit log lives in memory and in-process only. It is lost on restart. A production deployment would write to a database or append to a file. |
-| **Multi-flag support** | Guardian currently manages a single flag per process (from `config.yaml`). Running multiple Guardian instances — one per flag — is the workaround. |
+| **SQLite State & Drift Persistence** | Fully implemented via single-file SQLite database (`./data/guardian.db`). Rollout state, stage dwell times, idempotency actions, audit log decisions, and experiment snapshots persist across container restarts. |
+| **Multi-flag Support** | Fully implemented. Multi-rollout configs (`guardian.config.GuardianConfig`) allow managing several flags simultaneously with per-flag state machines, independent metrics, and multi-card display on the status page. |
+| **Flagsmith Webhooks & Drift Detection** | Fully implemented (`POST /webhooks/flagsmith` with HMAC-SHA256 signature verification). Pauses rollout and alerts on out-of-band changes with dual-layer periodic polling backup. |
 | **Git history** | Early development commits contain local-only Flagsmith dev credentials (a self-hosted instance with no network exposure). These are harmless for a local demo setup but would need to be rotated and history-rewritten before connecting a real production Flagsmith deployment. |
-| **Docker image** | The root `Dockerfile` is provided for Guardian but is **not tested in the demo** — the demo runs Guardian directly with `python -m guardian.main` for simplicity. |
+| **Docker image** | The root `Dockerfile` (Python 3.12-slim) builds and tests cleanly in CI, verified with health probes before publishing to GHCR. |
 
 ---
 

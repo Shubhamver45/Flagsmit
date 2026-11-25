@@ -24,6 +24,10 @@ def setup_django_shell():
     if not admin_password:
         admin_password = secrets.token_urlsafe(16)
 
+    webhook_secret = os.environ.get("FLAGSMITH_WEBHOOK_SECRET")
+    if not webhook_secret:
+        webhook_secret = secrets.token_hex(16)
+
     from users.models import FFAdminUser
     from organisations.models import Organisation, OrganisationRole, UserOrganisation
     from projects.models import Project
@@ -121,6 +125,9 @@ FLAGSMITH_ORG_ID={org.id}
 FLAGSMITH_PROJECT_ID={project.id}
 FLAGSMITH_ENVIRONMENT_ID={env.id}
 
+# Flagsmith Webhook Secret (HMAC-SHA256 signature verification)
+FLAGSMITH_WEBHOOK_SECRET={webhook_secret}
+
 # Flagsmith Experimentation Recalculation (Optional, DEMO_FORCE_RECALC=1 for fast demo testing)
 # DEMO_FORCE_RECALC=1
 
@@ -151,7 +158,7 @@ ADMIN_PASSWORD={admin_password}
     print("=== DOTENV_END ===\n")
 
 
-def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_id: int, env_key: str):
+def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_id: int, env_key: str, webhook_secret: str = ""):
     """
     Creates flag variants, the metric, and the experiment, and starts it,
     THROUGH THE PUBLIC ADMIN API as documented in official Flagsmith docs:
@@ -163,27 +170,39 @@ def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_i
     }
     print("==> Configuring Flags, Metric, and Experiment via Public Admin API...")
 
-    # 1. Feature: new_checkout (Standard Rollout Flag)
+    # 1. Feature: new_checkout (Multivariate Rollout Flag)
     feats_resp = requests.get(f"{api_url}/projects/{project_id}/features/", headers=headers)
     feats_resp.raise_for_status()
     feats = feats_resp.json().get("results", [])
     nc_feat = next((f for f in feats if f["name"] == "new_checkout"), None)
+    if nc_feat and nc_feat.get("type") != "MULTIVARIATE":
+        requests.delete(f"{api_url}/projects/{project_id}/features/{nc_feat['id']}/", headers=headers)
+        nc_feat = None
+
     if not nc_feat:
         r = requests.post(
             f"{api_url}/projects/{project_id}/features/",
             headers=headers,
             json={
                 "name": "new_checkout",
-                "type": "STANDARD",
+                "type": "MULTIVARIATE",
                 "default_enabled": False,
+                "initial_value": "old_flow",
                 "description": "New checkout flow gated rollout flag",
+                "multivariate_options": [
+                    {
+                        "type": "unicode",
+                        "string_value": "new_flow",
+                        "default_percentage_allocation": 0.0,
+                    }
+                ],
             },
         )
         r.raise_for_status()
         nc_feat = r.json()
-        print(f"  ✔ Created feature 'new_checkout' via Admin API (ID={nc_feat['id']})")
+        print(f"  ✔ Created multivariate feature 'new_checkout' via Admin API (ID={nc_feat['id']})")
     else:
-        print(f"  ✔ Feature 'new_checkout' already exists via Admin API (ID={nc_feat['id']})")
+        print(f"  ✔ Multivariate feature 'new_checkout' already exists via Admin API (ID={nc_feat['id']})")
 
     # 2. Multivariate Feature: checkout_experiment
     exp_feat = next((f for f in feats if f["name"] == "checkout_experiment"), None)
@@ -313,6 +332,36 @@ def setup_via_admin_api(api_url: str, admin_api_key: str, project_id: int, env_i
             )
             print("  ✔ Configured 50/50 variant allocation on environment feature state via Admin API")
 
+    # 6. Environment Webhook for Guardian Real-Time Drift Detection
+    if webhook_secret:
+        webhook_url = os.environ.get("GUARDIAN_WEBHOOK_URL", "http://host.docker.internal:8080/webhooks/flagsmith")
+        try:
+            wh_get = requests.get(f"{api_url}/environments/{env_key}/webhooks/", headers=headers)
+            wh_get.raise_for_status()
+            existing_webhooks = wh_get.json() if wh_get.status_code == 200 else []
+            match = next((w for w in existing_webhooks if w.get("url") == webhook_url), None)
+            if not match:
+                wh_post = requests.post(
+                    f"{api_url}/environments/{env_key}/webhooks/",
+                    headers=headers,
+                    json={
+                        "url": webhook_url,
+                        "secret": webhook_secret,
+                        "enabled": True,
+                    },
+                )
+                wh_post.raise_for_status()
+                print(f"  ✔ Registered Guardian environment webhook via Admin API ({webhook_url})")
+            else:
+                requests.patch(
+                    f"{api_url}/environments/{env_key}/webhooks/{match['id']}/",
+                    headers=headers,
+                    json={"secret": webhook_secret, "enabled": True},
+                ).raise_for_status()
+                print(f"  ✔ Verified Guardian environment webhook via Admin API ({webhook_url}, ID={match['id']})")
+        except Exception as e:
+            print(f"  ⚠️ Could not auto-register Guardian webhook: {e}", file=sys.stderr)
+
 
 def host_run():
     """Wrapper executed when setup_flagsmith.py is called from host."""
@@ -389,7 +438,9 @@ def host_run():
     env_id = int(conf.get("FLAGSMITH_ENVIRONMENT_ID", "1"))
     env_key = conf.get("FLAGSMITH_ENVIRONMENT_KEY", "")
 
-    setup_via_admin_api(api_url, admin_key, proj_id, env_id, env_key)
+    webhook_secret = conf.get("FLAGSMITH_WEBHOOK_SECRET", "")
+
+    setup_via_admin_api(api_url, admin_key, proj_id, env_id, env_key, webhook_secret=webhook_secret)
 
 
 if __name__ == "__main__":

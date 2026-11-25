@@ -5,6 +5,9 @@ and multi-rollout management with SQLite state persistence.
 """
 
 from __future__ import annotations
+import hashlib
+import hmac
+import json
 import os
 import secrets
 from typing import Any, Dict, Optional
@@ -73,6 +76,46 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "healthy", "service": "guardian"}
+
+    @app.post("/webhooks/flagsmith")
+    async def flagsmith_webhook(request: Request) -> Dict[str, Any]:
+        """
+        Receives and processes Flagsmith webhook events (FLAG_UPDATED).
+        Validates X-Flagsmith-Signature using constant-time comparison when secret is configured.
+        """
+        raw_body = await request.body()
+        sig_header = (
+            request.headers.get("X-Flagsmith-Signature")
+            or request.headers.get("x-flagsmith-signature")
+        )
+        secret = os.environ.get("FLAGSMITH_WEBHOOK_SECRET") or getattr(engine.config, "webhook_secret", None)
+
+        if secret:
+            if not sig_header:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Missing X-Flagsmith-Signature header",
+                )
+            expected_sig = hmac.new(
+                secret.encode("utf-8"),
+                raw_body,
+                hashlib.sha256,
+            ).hexdigest()
+            if not secrets.compare_digest(expected_sig, sig_header):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid X-Flagsmith-Signature",
+                )
+
+        try:
+            payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON payload: {e}",
+            )
+
+        return engine.handle_flagsmith_webhook(payload)
 
     @app.get("/status")
     def get_status(flag_name: Optional[str] = None) -> Dict[str, Any]:

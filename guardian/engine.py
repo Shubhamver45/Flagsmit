@@ -167,6 +167,211 @@ class GuardianEngine:
                 )
 
     # -------------------------------------------------------------------------
+    # Webhook Handling & Runtime Reconciliation
+    # -------------------------------------------------------------------------
+    def handle_flagsmith_webhook(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Processes incoming Flagsmith webhook events (FLAG_UPDATED).
+        Verifies if the flag is managed, checks if the actual percentage differs from
+        what Guardian last wrote to SQLite. If it differs, pauses the rollout with DRIFT
+        warning, dispatches alerts, and updates SQLite state.
+        Guardian's own writes must NOT trigger drift.
+        """
+        event_type = payload.get("event_type")
+        if event_type != "FLAG_UPDATED":
+            return {"status": "ignored", "reason": f"Event type '{event_type}' not handled"}
+
+        data = payload.get("data", {})
+        new_state = data.get("new_state", {})
+        feature = new_state.get("feature", {})
+        flag_name = feature.get("name")
+        changed_by = data.get("changed_by") or "unknown operator"
+
+        if not flag_name or flag_name not in self.rollout_configs:
+            return {"status": "ignored", "reason": f"Flag '{flag_name}' is not managed by Guardian"}
+
+        sm = self.state_machines[flag_name]
+        saved = self.storage.load_rollout_state(flag_name)
+        expected_pct = saved["current_percentage"] if saved else sm.current_percentage
+        stored_state = saved["current_state"] if saved else sm.current_state
+
+        is_enabled = bool(new_state.get("enabled", False))
+        mv_values = new_state.get("multivariate_feature_state_values", [])
+
+        if not is_enabled:
+            actual_pct = 0.0
+        elif mv_values:
+            actual_pct = float(mv_values[0].get("percentage_allocation", 0.0))
+        else:
+            actual_pct = 100.0 if is_enabled else 0.0
+
+        # Check if standard boolean flag match
+        is_standard_flag_match = False
+        if not mv_values and is_enabled and expected_pct > 0.0:
+            is_standard_flag_match = True
+
+        if is_standard_flag_match or abs(actual_pct - expected_pct) <= 0.01:
+            if self.drift_flags.get(flag_name, {}).get("detected"):
+                logger.info(f"✔ Drift resolved via webhook for flag '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%).")
+                self.drift_flags[flag_name] = {"detected": False}
+                self.storage.save_rollout_state(
+                    flag_name=flag_name,
+                    current_state=stored_state,
+                    current_stage_index=sm.current_stage_index,
+                    stage_entered_at=sm.stage_entered_at,
+                    current_percentage=expected_pct,
+                    is_approved=sm.is_approved,
+                    drift_detected=False,
+                    drift_details=None,
+                )
+            logger.info(f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%). No drift.")
+            return {
+                "status": "ok",
+                "message": f"Flag '{flag_name}' state matches expected state ({expected_pct}%).",
+                "flag_name": flag_name,
+            }
+
+        # Out-of-band change detected!
+        drift_msg = (
+            f"Flag '{flag_name}' modified out-of-band by {changed_by}: "
+            f"actual {actual_pct}% differs from expected {expected_pct}% ({stored_state})."
+        )
+        logger.warning(f"⚠️  [DRIFT DETECTED via Webhook] {drift_msg} Holding rollout.")
+        drift_info = {
+            "detected": True,
+            "source": "webhook",
+            "changed_by": changed_by,
+            "actual_percentage": actual_pct,
+            "expected_percentage": expected_pct,
+            "stored_state": stored_state,
+            "message": drift_msg,
+            "timestamp": data.get("timestamp") or time.time(),
+        }
+        self.drift_flags[flag_name] = drift_info
+        self.storage.save_rollout_state(
+            flag_name=flag_name,
+            current_state=stored_state,
+            current_stage_index=sm.current_stage_index,
+            stage_entered_at=sm.stage_entered_at,
+            current_percentage=expected_pct,
+            is_approved=sm.is_approved,
+            drift_detected=True,
+            drift_details=drift_info,
+        )
+
+        entry = self.audit_logger.record(
+            flag_name=flag_name,
+            from_state=stored_state,
+            to_state=stored_state,
+            decision=RolloutDecision.HOLD.value,
+            reason=f"[DRIFT DETECTED via Webhook] {drift_msg}",
+            numbers={
+                "changed_by": changed_by,
+                "actual_percentage": actual_pct,
+                "expected_percentage": expected_pct,
+                "source": "webhook",
+            },
+        )
+        self.alert_dispatcher.dispatch(entry)
+
+        return {
+            "status": "drift_detected",
+            "flag_name": flag_name,
+            "drift": drift_info,
+        }
+
+    def reconcile_runtime(self) -> Dict[str, Any]:
+        """
+        Periodic runtime reconciliation: reads each flag's real percentage from Flagsmith
+        and compares it to stored state. Drift detected via polling behaves identically
+        to drift detected via webhook.
+        """
+        results = {}
+        for flag_name, rc in self.rollout_configs.items():
+            sm = self.state_machines[flag_name]
+            saved = self.storage.load_rollout_state(flag_name)
+            expected_pct = saved["current_percentage"] if saved else sm.current_percentage
+            stored_state = saved["current_state"] if saved else sm.current_state
+
+            try:
+                real_pct = self.flagsmith_client.get_percentage_rollout(flag_name)
+            except Exception as e:
+                logger.warning(f"Reconciliation query failed for '{flag_name}': {e}")
+                continue
+
+            is_standard_flag_match = False
+            if real_pct == 100.0 and expected_pct > 0.0 and hasattr(self.flagsmith_client, "get_environment_feature_state"):
+                try:
+                    fs = self.flagsmith_client.get_environment_feature_state(flag_name)
+                    if isinstance(fs, dict) and not fs.get("multivariate_feature_state_values"):
+                        is_standard_flag_match = True
+                except Exception:
+                    pass
+
+            has_drift = not is_standard_flag_match and abs(real_pct - expected_pct) > 0.01
+
+            if has_drift:
+                current_drift = self.drift_flags.get(flag_name, {})
+                if not current_drift.get("detected"):
+                    drift_msg = (
+                        f"Flagsmith actual percentage ({real_pct}%) differs from "
+                        f"stored state '{stored_state}' expected percentage ({expected_pct}%)."
+                    )
+                    logger.warning(f"⚠️  [DRIFT DETECTED via Polling] Flag '{flag_name}': {drift_msg} Holding rollout.")
+                    drift_info = {
+                        "detected": True,
+                        "source": "polling",
+                        "changed_by": "unknown operator (detected via reconciliation polling)",
+                        "actual_percentage": real_pct,
+                        "expected_percentage": expected_pct,
+                        "stored_state": stored_state,
+                        "message": drift_msg,
+                        "timestamp": time.time(),
+                    }
+                    self.drift_flags[flag_name] = drift_info
+                    self.storage.save_rollout_state(
+                        flag_name=flag_name,
+                        current_state=stored_state,
+                        current_stage_index=sm.current_stage_index,
+                        stage_entered_at=sm.stage_entered_at,
+                        current_percentage=expected_pct,
+                        is_approved=sm.is_approved,
+                        drift_detected=True,
+                        drift_details=drift_info,
+                    )
+                    entry = self.audit_logger.record(
+                        flag_name=flag_name,
+                        from_state=stored_state,
+                        to_state=stored_state,
+                        decision=RolloutDecision.HOLD.value,
+                        reason=f"[DRIFT DETECTED via Polling] {drift_msg}",
+                        numbers={
+                            "actual_percentage": real_pct,
+                            "expected_percentage": expected_pct,
+                            "source": "polling",
+                        },
+                    )
+                    self.alert_dispatcher.dispatch(entry)
+                results[flag_name] = {"drift": True, "actual": real_pct, "expected": expected_pct}
+            else:
+                if self.drift_flags.get(flag_name, {}).get("detected"):
+                    logger.info(f"✔ Drift resolved for flag '{flag_name}': actual ({real_pct}%) matches expected ({expected_pct}%).")
+                    self.drift_flags[flag_name] = {"detected": False}
+                    self.storage.save_rollout_state(
+                        flag_name=flag_name,
+                        current_state=stored_state,
+                        current_stage_index=sm.current_stage_index,
+                        stage_entered_at=sm.stage_entered_at,
+                        current_percentage=expected_pct,
+                        is_approved=sm.is_approved,
+                        drift_detected=False,
+                        drift_details=None,
+                    )
+                results[flag_name] = {"drift": False, "actual": real_pct, "expected": expected_pct}
+
+        return results
+
+    # -------------------------------------------------------------------------
     # Evaluation Cycle
     # -------------------------------------------------------------------------
     def tick(
