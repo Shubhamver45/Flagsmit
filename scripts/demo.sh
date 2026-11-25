@@ -238,11 +238,11 @@ try:
         print(f\"  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of {exp.get('as_of')}{shortcut_tag}\")
         cw = exp.get('chance_to_be_worse')
         if exp.get('srm_warning'):
-            cw_str = "n/a (not evaluated: SRM)"
+            cw_str = 'n/a (not evaluated: SRM)'
         elif isinstance(cw, (int, float)):
             cw_str = f\"{cw:.1f}%\"
         else:
-            cw_str = \"n/a (collecting data)\"
+            cw_str = 'n/a (collecting data)'
         print(f\"  • Chance to be Worse: {cw_str}\")
         cwin = exp.get('chance_to_win')
         if cwin is not None:
