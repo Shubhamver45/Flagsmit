@@ -56,6 +56,9 @@ class GuardianEngine:
         self.in_flight_grace_seconds: float = float(
             getattr(config, "in_flight_grace_seconds", os.environ.get("GUARDIAN_IN_FLIGHT_GRACE_SECONDS", 5.0))
         )
+        self.echo_window_seconds: float = float(
+            getattr(config, "echo_window_seconds", os.environ.get("GUARDIAN_ECHO_WINDOW_SECONDS", 30.0))
+        )
         self.in_flight_transitions: Dict[str, Dict[str, Any]] = {}
         self._reconcile_lock = threading.Lock()
 
@@ -231,46 +234,61 @@ class GuardianEngine:
                     if abs(actual_pct - target_in_flight) <= 0.01:
                         self.in_flight_transitions.pop(flag_name, None)
 
+            # Check if this write matches a ledger entry written by Guardian within GUARDIAN_ECHO_WINDOW_SECONDS
+            is_echo = self.storage.is_recent_write(
+                flag_name=flag_name,
+                percentage=actual_pct,
+                window_seconds=self.echo_window_seconds,
+            )
+
             matches_expected = (
                 is_standard_flag_match
                 or is_in_flight
+                or is_echo
                 or abs(actual_pct - stored_pct) <= 0.01
                 or abs(actual_pct - sm_pct) <= 0.01
             )
 
             if matches_expected:
                 if self.drift_flags.get(flag_name, {}).get("detected"):
-                    resolve_msg = f"Drift resolved via webhook: flag '{flag_name}' restored to expected {expected_pct}% ({stored_state})."
-                    logger.info(f"✔ {resolve_msg}")
-                    self.drift_flags[flag_name] = {"detected": False}
-                    self.storage.save_rollout_state(
-                        flag_name=flag_name,
-                        current_state=stored_state,
-                        current_stage_index=sm.current_stage_index,
-                        stage_entered_at=sm.stage_entered_at,
-                        current_percentage=expected_pct,
-                        is_approved=sm.is_approved,
-                        drift_detected=False,
-                        drift_details=None,
+                    # Only resolve if the actual percentage matches the expected target percentage
+                    if abs(actual_pct - expected_pct) <= 0.01:
+                        resolve_msg = f"Drift resolved via webhook: flag '{flag_name}' restored to expected {expected_pct}% ({stored_state})."
+                        logger.info(f"✔ {resolve_msg}")
+                        self.drift_flags[flag_name] = {"detected": False}
+                        self.storage.save_rollout_state(
+                            flag_name=flag_name,
+                            current_state=stored_state,
+                            current_stage_index=sm.current_stage_index,
+                            stage_entered_at=sm.stage_entered_at,
+                            current_percentage=expected_pct,
+                            is_approved=sm.is_approved,
+                            drift_detected=False,
+                            drift_details=None,
+                        )
+                        entry = self.audit_logger.record(
+                            flag_name=flag_name,
+                            from_state=stored_state,
+                            to_state=stored_state,
+                            decision="RESOLVED",
+                            reason=f"[DRIFT RESOLVED via Webhook] {resolve_msg}",
+                            numbers={
+                                "target_percentage": expected_pct,
+                                "actual_percentage": actual_pct,
+                                "expected_percentage": expected_pct,
+                                "source": "webhook",
+                            },
+                        )
+                        self.alert_dispatcher.dispatch(entry)
+                if is_echo and abs(actual_pct - expected_pct) > 0.01:
+                    logger.info(
+                        f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) is a verified Guardian echo written within {self.echo_window_seconds}s. Skipping false drift."
                     )
-                    entry = self.audit_logger.record(
-                        flag_name=flag_name,
-                        from_state=stored_state,
-                        to_state=stored_state,
-                        decision="RESOLVED",
-                        reason=f"[DRIFT RESOLVED via Webhook] {resolve_msg}",
-                        numbers={
-                            "target_percentage": expected_pct,
-                            "actual_percentage": actual_pct,
-                            "expected_percentage": expected_pct,
-                            "source": "webhook",
-                        },
-                    )
-                    self.alert_dispatcher.dispatch(entry)
-                logger.info(f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%). No drift.")
+                else:
+                    logger.info(f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%). No drift.")
                 return {
                     "status": "ok",
-                    "message": f"Flag '{flag_name}' state matches expected state ({expected_pct}%).",
+                    "message": f"Flag '{flag_name}' state matches expected state or echo ({expected_pct}%).",
                     "flag_name": flag_name,
                 }
 
@@ -389,9 +407,21 @@ class GuardianEngine:
                         if abs(real_pct - target_in_flight) <= 0.01:
                             self.in_flight_transitions.pop(flag_name, None)
 
+                # Check if this write matches a ledger entry written by Guardian within GUARDIAN_ECHO_WINDOW_SECONDS
+                is_echo = self.storage.is_recent_write(
+                    flag_name=flag_name,
+                    percentage=real_pct,
+                    window_seconds=self.echo_window_seconds,
+                )
+                if is_echo and abs(real_pct - stored_pct) > 0.01:
+                    logger.debug(
+                        f"Reconciler: flag '{flag_name}' actual {real_pct}% matches write in echo window ({self.echo_window_seconds}s). Skipping false drift."
+                    )
+
                 matches_expected = (
                     is_standard_flag_match
                     or is_in_flight
+                    or is_echo
                     or abs(real_pct - stored_pct) <= 0.01
                     or abs(real_pct - sm_pct) <= 0.01
                 )
@@ -613,8 +643,10 @@ class GuardianEngine:
                 )
 
                 if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
+                    self.storage.record_write(flag_name, pct, written_at=now)
                     self.flagsmith_client.set_percentage_rollout(flag_name, pct)
                 elif decision == RolloutDecision.ROLLBACK:
+                    self.storage.record_write(flag_name, 0.0, written_at=now)
                     self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
 
                 self.idempotency_manager.mark_executed(
@@ -878,6 +910,7 @@ class GuardianEngine:
             self.drift_flags[fname] = {"detected": False}
 
             try:
+                self.storage.record_write(fname, 0.0, written_at=time.time())
                 self.flagsmith_client.set_percentage_rollout(fname, 0.0)
             except Exception as e:
                 logger.warning(f"Could not reset Flagsmith rollout percentage for '{fname}': {e}")
@@ -969,8 +1002,8 @@ class GuardianEngine:
 
                     eligible, block_reason = self.check_approval_eligibility(flag_name=fname)
                     cw = round(float(chance_worse), 1) if chance_worse is not None else None
-                    cwin = round(float(details["chance_to_win"]), 1) if details.get("chance_to_win") is not None else None
-                    lift_val = round(float(details["lift"]), 1) if details.get("lift") is not None else None
+                    cwin = float(details["chance_to_win"]) if details.get("chance_to_win") is not None else None
+                    lift_val = float(details["lift"]) if details.get("lift") is not None else None
                     experiment_summary = {
                         "name": "Checkout A/B Experiment",
                         "as_of": details.get("as_of"),
@@ -997,8 +1030,8 @@ class GuardianEngine:
             if not experiment_summary and saved_exp:
                 eligible, block_reason = self.check_approval_eligibility(flag_name=fname)
                 cw = round(float(saved_exp["chance_to_be_worse"]), 1) if saved_exp.get("chance_to_be_worse") is not None else None
-                cwin = round(float(saved_exp["chance_to_win"]), 1) if saved_exp.get("chance_to_win") is not None else None
-                lift_val = round(float(saved_exp["lift"]), 1) if saved_exp.get("lift") is not None else None
+                cwin = float(saved_exp["chance_to_win"]) if saved_exp.get("chance_to_win") is not None else None
+                lift_val = float(saved_exp["lift"]) if saved_exp.get("lift") is not None else None
                 srm_val = saved_exp.get("srm_p_value")
                 srm_warn = bool(saved_exp.get("srm_warning", False) or (srm_val is not None and srm_val < 0.001))
                 experiment_summary = {

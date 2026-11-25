@@ -467,3 +467,156 @@ def test_webhook_drift_deduplication(tmp_path):
     assert len(drift_entries) == 1
 
     storage.close()
+
+
+def test_write_ledger_echo_immunity_and_late_webhooks(tmp_path):
+    db_file = tmp_path / "echo_test.db"
+    storage = GuardianStorage(db_path=db_file)
+
+    cfg = RolloutConfig(
+        flag_name="echo_flag",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=1,
+        echo_window_seconds=30.0,
+    )
+    client = MockFlagsmithClient(initial_percentages={"echo_flag": 0.0})
+    engine = GuardianEngine(config=cfg, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # 1. Simulate full progression 1 -> 5 -> 25 -> 100
+    now = time.time()
+    # Write Stage 1 (1%) at t0
+    storage.record_write("echo_flag", 1.0, written_at=now - 20)
+    # Write Stage 2 (5%) at t0 + 10s
+    storage.record_write("echo_flag", 5.0, written_at=now - 10)
+    # Write Stage 3 (25%) at t0 + 15s
+    storage.record_write("echo_flag", 25.0, written_at=now - 5)
+    engine.state_machine.restore_state("STAGE_3", 2, now - 5)
+    storage.save_rollout_state("echo_flag", "STAGE_3", 2, now - 5, 25.0)
+
+    # Webhook arrives late: a webhook for 5.0% delivered 5s late while Guardian is at 25.0%
+    late_webhook_payload = {
+        "event_type": "FLAG_UPDATED",
+        "data": {
+            "changed_by": "Guardian Admin Key",
+            "new_state": {
+                "enabled": True,
+                "feature": {"name": "echo_flag"},
+                "multivariate_feature_state_values": [{"percentage_allocation": 5.0}],
+            },
+        },
+    }
+    res = engine.handle_flagsmith_webhook(late_webhook_payload)
+    assert res["status"] == "ok"
+    assert engine.drift_flags["echo_flag"]["detected"] is False
+
+    # Also verify reconciler runtime does not flag 5.0% if it observed it within echo window
+    client.percentages["echo_flag"] = 5.0
+    reconcile_res = engine.reconcile_runtime()
+    assert engine.drift_flags["echo_flag"]["detected"] is False
+
+    # 2. Real out-of-band change by ops-engineer: 50.0% (a value Guardian never wrote)
+    ops_webhook_payload = {
+        "event_type": "FLAG_UPDATED",
+        "data": {
+            "changed_by": "ops-engineer",
+            "new_state": {
+                "enabled": True,
+                "feature": {"name": "echo_flag"},
+                "multivariate_feature_state_values": [{"percentage_allocation": 50.0}],
+            },
+        },
+    }
+    res_ops = engine.handle_flagsmith_webhook(ops_webhook_payload)
+    assert res_ops["status"] == "drift_detected"
+    assert engine.drift_flags["echo_flag"]["detected"] is True
+
+    # 3. An old write outside the echo window (written 40s ago when window is 30s)
+    storage.record_write("echo_flag", 12.0, written_at=now - 40)
+    assert storage.is_recent_write("echo_flag", 12.0, window_seconds=30.0, now=now) is False
+
+    storage.close()
+
+
+def test_exact_value_display_and_require_winner_boundaries(tmp_path):
+    db_file = tmp_path / "display_boundary_test.db"
+    storage = GuardianStorage(db_path=db_file)
+
+    cfg = RolloutConfig(
+        flag_name="boundary_flag",
+        stages=[1, 5, 25, 100],
+        require_winner=True,
+    )
+    client = MockFlagsmithClient(initial_percentages={"boundary_flag": 25.0})
+    engine = GuardianEngine(config=cfg, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # Test exact rounding in display: 0.9339 -> 93.4%, 0.0838 -> 8.4%
+    storage.save_experiment_results("boundary_flag", {
+        "as_of": "2026-01-01T00:00:00Z",
+        "chance_to_win": 0.9339,
+        "chance_to_be_worse": 6.6,
+        "ci_low": 0.15,
+        "ci_high": 0.85,
+        "lift": 0.425,
+        "srm_p_value": 0.50,
+    })
+    status = engine.get_status("boundary_flag")
+    cwin = status["experiment"]["chance_to_win"]
+    assert cwin == 0.9339
+    # Format exactly as demo.sh does:
+    cwin_str = f"{cwin*100:.1f}%" if cwin <= 1.0 else f"{cwin:.1f}%"
+    assert cwin_str == "93.4%"
+
+    # 0.0838 -> 8.4%
+    storage.save_experiment_results("boundary_flag", {
+        "as_of": "2026-01-01T00:00:00Z",
+        "chance_to_win": 0.0838,
+        "chance_to_be_worse": 91.6,
+        "ci_low": -0.50,
+        "ci_high": 0.10,
+        "srm_p_value": 0.50,
+    })
+    status = engine.get_status("boundary_flag")
+    cwin_worse = status["experiment"]["chance_to_win"]
+    assert cwin_worse == 0.0838
+    cwin_worse_str = f"{cwin_worse*100:.1f}%" if cwin_worse <= 1.0 else f"{cwin_worse:.1f}%"
+    assert cwin_worse_str == "8.4%"
+
+    # Test require_winner boundary: 0.949 (blocked) vs 0.951 (cleared)
+    storage.save_experiment_results("boundary_flag", {
+        "as_of": "2026-01-01T00:00:00Z",
+        "chance_to_win": 0.949,
+        "chance_to_be_worse": 5.1,
+        "ci_low": 0.10,
+        "ci_high": 0.60,
+        "srm_p_value": 0.50,
+    })
+    eligible_949, reason_949 = engine.check_approval_eligibility("boundary_flag")
+    assert eligible_949 is False
+    assert "chance to win 94.9% < 95.0%" in reason_949
+
+    storage.save_experiment_results("boundary_flag", {
+        "as_of": "2026-01-01T00:00:00Z",
+        "chance_to_win": 0.951,
+        "chance_to_be_worse": 4.9,
+        "ci_low": 0.10,
+        "ci_high": 0.60,
+        "srm_p_value": 0.50,
+    })
+    eligible_951, reason_951 = engine.check_approval_eligibility("boundary_flag")
+    assert eligible_951 is True
+    assert reason_951 is None
+
+    # Even if chance_to_win is 0.99, if ci_low <= 0, require_winner blocks
+    storage.save_experiment_results("boundary_flag", {
+        "as_of": "2026-01-01T00:00:00Z",
+        "chance_to_win": 0.99,
+        "chance_to_be_worse": 1.0,
+        "ci_low": -0.01,
+        "ci_high": 0.80,
+        "srm_p_value": 0.50,
+    })
+    eligible_ci, reason_ci = engine.check_approval_eligibility("boundary_flag")
+    assert eligible_ci is False
+    assert "CI low" in reason_ci
+
+    storage.close()

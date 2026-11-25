@@ -96,6 +96,15 @@ class GuardianStorage:
                     updated_at REAL NOT NULL
                 );
             """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS write_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flag_name TEXT NOT NULL,
+                    percentage REAL NOT NULL,
+                    written_at REAL NOT NULL
+                );
+            """)
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_write_ledger_flag ON write_ledger(flag_name, written_at);")
 
     # -------------------------------------------------------------------------
     # Rollout State
@@ -388,6 +397,79 @@ class GuardianStorage:
                 return data
             except Exception:
                 return None
+
+    # -------------------------------------------------------------------------
+    # Write Ledger (Echo Tracker for Webhook & Reconciler Drift Immunity)
+    # -------------------------------------------------------------------------
+    def record_write(
+        self,
+        flag_name: str,
+        percentage: float,
+        written_at: Optional[float] = None,
+    ) -> None:
+        written_at = written_at if written_at is not None else time.time()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO write_ledger (flag_name, percentage, written_at)
+                VALUES (?, ?, ?);
+                """,
+                (flag_name, float(percentage), float(written_at)),
+            )
+            # Prune old writes (> 1 hour old) to keep write ledger bounded
+            self._conn.execute(
+                "DELETE FROM write_ledger WHERE written_at < ?;",
+                (written_at - 3600.0,),
+            )
+
+    def is_recent_write(
+        self,
+        flag_name: str,
+        percentage: float,
+        window_seconds: float = 30.0,
+        now: Optional[float] = None,
+    ) -> bool:
+        now = now if now is not None else time.time()
+        cutoff = now - float(window_seconds)
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT percentage, written_at FROM write_ledger
+                WHERE flag_name = ? AND written_at >= ?
+                ORDER BY written_at DESC;
+                """,
+                (flag_name, cutoff),
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                if abs(float(row["percentage"]) - float(percentage)) <= 0.01:
+                    return True
+            return False
+
+    def get_write_ledger(
+        self,
+        flag_name: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            if flag_name:
+                cur = self._conn.execute(
+                    """
+                    SELECT * FROM write_ledger
+                    WHERE flag_name = ?
+                    ORDER BY written_at DESC LIMIT ?;
+                    """,
+                    (flag_name, limit),
+                )
+            else:
+                cur = self._conn.execute(
+                    """
+                    SELECT * FROM write_ledger
+                    ORDER BY written_at DESC LIMIT ?;
+                    """,
+                    (limit,),
+                )
+            return [dict(row) for row in cur.fetchall()]
 
     def close(self) -> None:
         with self._lock:

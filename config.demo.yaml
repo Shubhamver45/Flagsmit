@@ -18,7 +18,13 @@ require_approval_before_final: true
 
 # Gate semantics: when require_winner is true, approval requires chance_to_win >= 95% and credible interval low > 0.
 # When false (default), approval blocks on evidence of harm (chance_to_be_worse > threshold).
-require_winner: false
+require_winner: true
+
+# Reconcile polling interval (seconds): 2s in demo mode for rapid drift detection
+reconcile_interval: 2.0
+
+# Echo window (seconds) to ignore delayed webhooks of Guardian's own writes
+echo_window_seconds: 30.0
 
 # Guardrail metric triggers: error rate on new variant must not exceed 5%
 guardrails:

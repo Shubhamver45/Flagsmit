@@ -58,6 +58,8 @@ class RolloutConfig:
     slack_webhook_url: Optional[str] = None
     generic_webhook_url: Optional[str] = None
     in_flight_grace_seconds: float = 5.0
+    echo_window_seconds: float = 30.0
+    reconcile_interval_seconds: float = 10.0
     require_winner: bool = False
 
     def __post_init__(self):
@@ -74,6 +76,10 @@ class RolloutConfig:
             raise ValueError("soak_time_seconds must be non-negative")
         if self.in_flight_grace_seconds < 0:
             raise ValueError("in_flight_grace_seconds must be non-negative")
+        if self.echo_window_seconds < 0:
+            raise ValueError("echo_window_seconds must be non-negative")
+        if self.reconcile_interval_seconds < 0:
+            raise ValueError("reconcile_interval_seconds must be non-negative")
 
     @property
     def rollouts(self) -> List[RolloutConfig]:
@@ -148,6 +154,14 @@ class GuardianConfig:
     def require_winner(self) -> bool:
         return self.primary_rollout.require_winner
 
+    @property
+    def echo_window_seconds(self) -> float:
+        return self.primary_rollout.echo_window_seconds
+
+    @property
+    def reconcile_interval_seconds(self) -> float:
+        return self.primary_rollout.reconcile_interval_seconds
+
 
 def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
     raw_guardrails = data.get("guardrails", [])
@@ -169,6 +183,20 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
         for g in raw_guardrails
     ]
 
+    default_reconcile = 2.0 if os.environ.get("DEMO_MODE") in ("1", "true") else 10.0
+    reconcile_val = float(
+        data.get("reconcile_interval")
+        or data.get("reconcile_interval_seconds")
+        or os.environ.get("GUARDIAN_RECONCILE_INTERVAL")
+        or os.environ.get("GUARDIAN_RECONCILE_INTERVAL_SECONDS")
+        or default_reconcile
+    )
+    echo_window_val = float(
+        data.get("echo_window_seconds")
+        or os.environ.get("GUARDIAN_ECHO_WINDOW_SECONDS")
+        or 30.0
+    )
+
     return RolloutConfig(
         flag_name=data["flag_name"],
         stages=data.get("stages", [1, 5, 25, 100]),
@@ -181,6 +209,8 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
         slack_webhook_url=data.get("slack_webhook_url"),
         generic_webhook_url=data.get("generic_webhook_url"),
         in_flight_grace_seconds=float(data.get("in_flight_grace_seconds", os.environ.get("GUARDIAN_IN_FLIGHT_GRACE_SECONDS", 5.0))),
+        echo_window_seconds=echo_window_val,
+        reconcile_interval_seconds=reconcile_val,
         require_winner=bool(data.get("require_winner", False)),
     )
 
@@ -240,6 +270,7 @@ def load_config(file_path: str | Path = "config.yaml") -> Union[RolloutConfig, G
             )
         )
 
+    default_reconcile = 2.0 if os.environ.get("DEMO_MODE") in ("1", "true") else 10.0
     return RolloutConfig(
         flag_name=flag_name,
         stages=stages,
@@ -248,4 +279,6 @@ def load_config(file_path: str | Path = "config.yaml") -> Union[RolloutConfig, G
         guardrails=guardrails,
         environment_key=env_key,
         in_flight_grace_seconds=float(os.environ.get("GUARDIAN_IN_FLIGHT_GRACE_SECONDS", 5.0)),
+        echo_window_seconds=float(os.environ.get("GUARDIAN_ECHO_WINDOW_SECONDS", 30.0)),
+        reconcile_interval_seconds=float(os.environ.get("GUARDIAN_RECONCILE_INTERVAL", os.environ.get("GUARDIAN_RECONCILE_INTERVAL_SECONDS", default_reconcile))),
     )

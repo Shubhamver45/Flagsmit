@@ -304,7 +304,7 @@ def setup_via_admin_api(
         json={
             "name": "Checkout Completed",
             "description": "Conversion metric tracking completed checkout purchases",
-            "aggregation": "count",
+            "aggregation": "occurrence",
             "direction": "up",
             "definition": {"version": 1, "event": "checkout_completed"},
         },
@@ -312,9 +312,9 @@ def setup_via_admin_api(
     m_res.raise_for_status()
     m_data = m_res.json()
     metric_id = m_data["id"]
-    agg_type = m_data.get("aggregation", "count")
+    agg_type = m_data.get("aggregation", "occurrence")
     print(f"  ✔ Created metric 'Checkout Completed' via Admin API (ID={metric_id}, aggregation='{agg_type}')")
-    print(f"    ℹ Note on aggregation='{agg_type}': tracks occurrence count per user identity (sum can exceed n when users complete multiple checkouts)")
+    print(f"    ℹ Note on aggregation='{agg_type}': tracks per-identity conversion (each user converts at most once in occurrence calculation)")
 
     # 5. Create Experiment: Checkout A/B Experiment
     exp_res = requests.post(

@@ -275,9 +275,8 @@ wait_for_state "STAGE_1" 20
 echo ""
 echo "--- Mid-Rollout Scenario: Out-of-Band State Change & Real-Time Drift Detection ---"
 echo "Simulating external operator ('ops-engineer') altering 'new_checkout' to 50% via Admin API..."
-DRIFT_START_TIME=$(python3 -c "import time; print(time.time())")
 python3 -c "
-import os, requests
+import os, requests, time
 from dotenv import dotenv_values
 env = dotenv_values('.env')
 api_url = env.get('FLAGSMITH_URL', 'http://localhost:8000/api/v1')
@@ -289,6 +288,9 @@ fs_list = fs_resp.json().get('results', [])
 if fs_list:
     fs = fs_list[0]
     mv_values = fs.get('multivariate_feature_state_values', [])
+    t0 = time.time()
+    with open('/tmp/guardian_drift_start.txt', 'w') as f:
+        f.write(str(t0))
     if mv_values:
         requests.patch(f'{api_url}/features/featurestates/{fs[\"id\"]}/', headers=headers, json={
             'environment': fs['environment'],
@@ -306,6 +308,7 @@ if fs_list:
         }).raise_for_status()
     print('  ✔ External operator (ops-engineer) changed flag to 50% in Flagsmith (triggering real-time webhook to Guardian)')
 "
+DRIFT_START_TIME=$(cat /tmp/guardian_drift_start.txt 2>/dev/null || python3 -c "import time; print(time.time())")
 
 echo "Verifying Guardian detects drift, pauses rollout, and surfaces drift alert:"
 DRIFT_DETECTED=0
@@ -406,11 +409,11 @@ fi
 
 echo ""
 echo "--- Phase 2 (Scenario 2): Approval Gate Blocks on Underperforming (WORSE) Variation ---"
-echo "Setting experiment mode to 'worse' (checkout event rate per user visit: control ~75%, variation ~5%)..."
-echo "ℹ Metric aggregation='count': tracks total completed checkouts per identity (sum can exceed n across repeated visits)."
+echo "Setting experiment mode to 'worse' (per-identity conversion: control ~60%, variation ~35%)..."
+echo "ℹ Metric aggregation='occurrence': tracks per-identity conversion rates (each user converts at most once)."
 curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=worse" | python3 -m json.tool
 echo "Generating traffic for worse variation to calculate statistical underperformance..."
-PYTHONPATH=. python3 demo/simulator.py --prefix worse_user --requests 250 --identities 200 > /dev/null
+PYTHONPATH=. python3 demo/simulator.py --prefix worse_user --requests 250 --identities 160 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
 
@@ -431,12 +434,12 @@ else
 fi
 
 echo ""
-echo "--- Phase 3: Happy-Path Scenario (No Evidence of Harm) & Human Operator Promotion ---"
-echo "Setting experiment mode to 'winner' (checkout event rate per user visit: variation ~98%, control ~10%)..."
-echo "ℹ Verifying gate clearance under no evidence of harm (chance to be worse <= 10.0%, no SRM)."
+echo "--- Phase 3: Happy-Path Decisive Winner Scenario & Human Operator Promotion ---"
+echo "Setting experiment mode to 'winner' (per-identity conversion: control ~35%, variation ~60%)..."
+echo "ℹ Verifying gate clearance under require_winner: true (chance to win >= 95.0% and 95% CI low > 0.0, no SRM)."
 curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=winner" | python3 -m json.tool
 echo "Generating traffic for winner variation demonstrating positive lift..."
-PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 450 --identities 300 > /dev/null
+PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 600 --identities 500 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
 
@@ -449,7 +452,7 @@ echo "==> Guardian Status Check (Gate Evaluation for Winner Variation):"
 print_guardian_experiment_status
 
 echo "Executing operator promotion approval:"
-if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: no evidence of harm (chance to be worse <= 10.0%), no SRM"; then
+if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: decisive winner (chance to win >= 95.0%, CI low > 0.0), no SRM"; then
     wait_for_state "PROMOTED" 10
     echo "✔ Feature flag successfully promoted to 100%!"
 else

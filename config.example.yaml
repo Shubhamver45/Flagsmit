@@ -20,6 +20,12 @@ require_approval_before_final: true
 # When false (default), approval blocks on evidence of harm (chance_to_be_worse > threshold).
 require_winner: false
 
+# Reconcile polling interval (seconds): background polling interval to detect out-of-band flag changes
+reconcile_interval: 10.0
+
+# Echo window (seconds) to ignore delayed webhooks of Guardian's own writes
+echo_window_seconds: 30.0
+
 # Guardrail metric triggers: error rate on new variant must not exceed 5%
 guardrails:
   - name: "new_flow_error_rate"

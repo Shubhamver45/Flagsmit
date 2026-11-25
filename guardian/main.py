@@ -167,7 +167,12 @@ def run_server(
     app = create_app(engine)
 
     if reconcile_interval is None:
-        reconcile_interval = float(os.environ.get("GUARDIAN_RECONCILE_INTERVAL_SECONDS", "10.0"))
+        default_reconcile = 2.0 if (demo_mode or os.environ.get("DEMO_MODE") in ("1", "true")) else 10.0
+        reconcile_interval = getattr(
+            engine.config,
+            "reconcile_interval_seconds",
+            float(os.environ.get("GUARDIAN_RECONCILE_INTERVAL_SECONDS", default_reconcile)),
+        )
 
     @app.on_event("startup")
     async def startup_event():

@@ -44,6 +44,7 @@ services:
       - migrate
     environment:
       <<: *flagsmith-env
+      TASK_PROCESSOR_SLEEP_INTERVAL_MS: 250
     healthcheck:
       disable: true
     depends_on:
@@ -59,6 +60,7 @@ services:
       - serve
     environment:
       <<: *flagsmith-env
+      TASK_PROCESSOR_SLEEP_INTERVAL_MS: 250
     ports:
       - 8000:8000
     depends_on:
@@ -72,6 +74,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       <<: *flagsmith-env
+      TASK_PROCESSOR_SLEEP_INTERVAL_MS: 250
     ports:
       - 8001:8000
     depends_on:

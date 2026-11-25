@@ -2,6 +2,7 @@ import os
 import random
 import logging
 import secrets
+import hashlib
 from flask import Flask, request, jsonify
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 try:
@@ -139,25 +140,28 @@ def checkout():
 
     # 3. Normal successful checkout: track 'checkout_completed' conversion event
     # Dynamically adjusted based on EXPERIMENT_MODE:
-    # - "worse": control converts at 75%, variation at 5% (chance_to_be_worse ~99% > 10%)
-    # - "winner": control converts at 20%, variation at 98% (chance_to_win > 99%, chance_to_be_worse < 1%)
-    # - "balanced": control converts at 35%, variation at 98%
-    should_convert = True
+    # - "worse": control ~60%, variation ~35% (chance_to_be_worse > 90% > 10% limit)
+    # - "winner": control ~35%, variation ~60% (chance_to_win >= 95%, ci_low > 0)
+    # - "balanced": control ~35%, variation ~35%
+    # Uses deterministic hash per user_id to enforce true per-identity conversion in occurrence mode
+    user_hash = int(hashlib.md5(f"{user_id}:conv".encode()).hexdigest(), 16)
+    user_rand = (user_hash % 10000) / 10000.0
+
     if EXPERIMENT_MODE == "worse":
         if exp_variant == "control":
-            should_convert = (random.random() <= 0.75)
+            should_convert = (user_rand < 0.60)
         else:
-            should_convert = (random.random() <= 0.05)
+            should_convert = (user_rand < 0.35)
     elif EXPERIMENT_MODE == "winner":
         if exp_variant == "control":
-            should_convert = (random.random() <= 0.10)
+            should_convert = (user_rand < 0.35)
         else:
-            should_convert = (random.random() <= 0.98)
+            should_convert = (user_rand < 0.60)
     else:
         if exp_variant == "control":
-            should_convert = (random.random() <= 0.35)
+            should_convert = (user_rand < 0.35)
         else:
-            should_convert = (random.random() <= 0.98)
+            should_convert = (user_rand < 0.35)
 
     if should_convert:
         try:
