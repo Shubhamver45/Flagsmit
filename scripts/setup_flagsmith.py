@@ -240,6 +240,38 @@ def setup_via_admin_api(
     else:
         print(f"  ✔ Multivariate feature 'new_checkout' already exists via Admin API (ID={nc_feat['id']})")
 
+    # Ensure environment feature state for new_checkout starts cleanly at 0.0% / disabled
+    try:
+        fs_resp = requests.get(f"{api_url}/environments/{env_key}/featurestates/?feature={nc_feat['id']}", headers=headers)
+        if fs_resp.status_code == 200 and fs_resp.json().get("results"):
+            fs = fs_resp.json()["results"][0]
+            fs_id = fs["id"]
+            mv_vals = fs.get("multivariate_feature_state_values", [])
+            if mv_vals:
+                mv_id = mv_vals[0]["id"]
+                mv_opt_id = mv_vals[0]["multivariate_feature_option"]
+                patch_payload = {
+                    "environment": env_id,
+                    "enabled": False,
+                    "multivariate_feature_state_values": [
+                        {
+                            "id": mv_id,
+                            "multivariate_feature_option": mv_opt_id,
+                            "percentage_allocation": 0.0,
+                        }
+                    ],
+                }
+            else:
+                patch_payload = {
+                    "environment": env_id,
+                    "enabled": False,
+                }
+            p_res = requests.patch(f"{api_url}/features/featurestates/{fs_id}/", headers=headers, json=patch_payload)
+            p_res.raise_for_status()
+            print(f"  ✔ Reset environment feature state for 'new_checkout' to 0.0% (disabled)")
+    except Exception as e:
+        print(f"  ⚠️ Note: Could not reset new_checkout feature state: {e}")
+
     # 2. Multivariate Feature: checkout_experiment
     exp_feat = next((f for f in feats if f["name"] == "checkout_experiment"), None)
     if not exp_feat:
