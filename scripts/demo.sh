@@ -29,6 +29,19 @@ else
     echo "⏱️ Production Mode: DEMO_FORCE_RECALC=0 (uses public API POST /results/refresh/ with 5-minute cooldown)"
 fi
 
+# Ensure Python virtual environment and dependencies are present
+if ! python3 -c "import fastapi, uvicorn, requests, yaml, pydantic, prometheus_client" 2>/dev/null; then
+    echo "==> Python dependencies not found in active environment."
+    if [ ! -d ".venv" ]; then
+        echo "==> Bootstrapping clean virtual environment in .venv..."
+        python3 -m venv .venv
+    fi
+    echo "==> Activating .venv and installing dependencies..."
+    source .venv/bin/activate
+    pip install -q --no-cache-dir -r requirements.txt
+    pip install -q --no-cache-dir -e .
+fi
+
 wait_for_url() {
     local url="$1"
     local name="$2"

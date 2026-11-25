@@ -49,6 +49,11 @@ jobs:
       - name: Verify imports (smoke test)
         run: python -c "from guardian.engine import GuardianEngine; from guardian.state_machine import RolloutStateMachine; from guardian.flagsmith_client import FlagsmithAdminClient; print('All imports OK')"
 
+      - name: Verify README claims and links
+        run: |
+          python scripts/check_readme_claims.py
+          python scripts/check_readme_links.py
+
   container-health-check:
     name: Container Build & Health Check
     runs-on: ubuntu-latest
