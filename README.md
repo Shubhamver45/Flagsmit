@@ -55,6 +55,18 @@ cd Flagsmit
 ./scripts/demo.sh
 ```
 
+### Visual Walkthrough & Real Dashboard Screenshots
+
+| Healthy Progressive Rollout (Stage 2 at 5%) | Out-of-Band Drift Alert Banner |
+| :---: | :---: |
+| [![Healthy Rollout](docs/img/healthy_rollout.png)](docs/img/healthy_rollout.png) | [![Drift Banner](docs/img/drift_banner.png)](docs/img/drift_banner.png) |
+| *Progressing through 5% with healthy PromQL guardrails* | *Real-time alert pausing rollout when actual != expected* |
+
+| Experiment Gate Blocked (SRM Anomaly) | Automated Rollback to 0.0% on Breach |
+| :---: | :---: |
+| [![Approval Blocked](docs/img/approval_blocked.png)](docs/img/approval_blocked.png) | [![Automated Rollback](docs/img/rollback.png)](docs/img/rollback.png) |
+| *Promotion strictly blocked when traffic assignment corrupts (p < 0.001)* | *Instant 0.0% rollback when error rate exceeds 5.0% threshold* |
+
 ### What `demo.sh` Runs
 1. **Infrastructure Spin-Up**: Launches self-hosted Flagsmith, PostgreSQL, Task Processor, Prometheus, and the Demo Checkout App in Docker.
 2. **Auto-Provisioning**: Runs `scripts/setup_flagsmith.py` to configure organisations, projects, environments, feature flags (`new_checkout`), experiments (`checkout_experiment`), metrics, and environment webhooks via the Admin API.
@@ -217,8 +229,8 @@ Across five consecutive end-to-end demo runs (`demo-run-1.log` through `demo-run
 
 | Metric | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Min | Median | Max | Proved In |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Drift Detection Latency** | 5.96s | 6.83s | 7.87s | 8.29s | 7.74s | **5.96s** | **7.74s** | **8.29s** | `demo-run-*.log`, `tests/test_drift_webhook.py` |
-| **Automated Rollback Time** | 4.80s | 6.00s | 4.00s | 3.70s | 5.40s | **3.70s** | **4.80s** | **6.00s** | `demo-run-*.log`, `tests/test_rollback.py` |
+| **Drift Detection Latency** | 5.96s | 6.83s | 7.87s | 8.29s | 7.74s | **5.96s** | **7.74s** | **8.29s** | `demo-run-*.log`, `tests/test_webhooks_drift.py` |
+| **Automated Rollback Time** | 4.80s | 6.00s | 4.00s | 3.70s | 5.40s | **3.70s** | **4.80s** | **6.00s** | `demo-run-*.log`, `tests/test_guardian_engine.py` |
 
 > [!NOTE]
 > **Drift Latency Analysis**: Drift is detected asynchronously via webhooks. The measured latency range (5.96s – 8.29s) represents the full end-to-end distributed transaction: operator API write ➔ Postgres insert ➔ asynchronous `flagsmith-task-processor` queue polling ➔ HMAC-signed webhook delivery across the Docker bridge ➔ Guardian signature verification and SQLite ledger comparison.
