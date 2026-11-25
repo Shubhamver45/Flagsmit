@@ -24,6 +24,7 @@ FLAGSMITH_EVENTS_API_URL = os.environ.get(
 )
 BUG_IN_NEW_CHECKOUT = os.environ.get("BUG_IN_NEW_CHECKOUT", "1") == "1"
 SIMULATE_SRM = os.environ.get("SIMULATE_SRM", "0").lower() in ("1", "true", "yes")
+EXPERIMENT_MODE = os.environ.get("EXPERIMENT_MODE", "balanced")  # "winner", "worse", "balanced"
 DEMO_API_TOKEN = os.environ.get("DEMO_API_TOKEN", "")
 
 def check_demo_auth() -> bool:
@@ -137,13 +138,26 @@ def checkout():
         }), 500
 
     # 3. Normal successful checkout: track 'checkout_completed' conversion event
-    # In healthy A/B test, variation converts at ~98% while control converts at ~35%
-    # demonstrating decisive positive lift and very low chance-to-be-worse (< 5%).
+    # Dynamically adjusted based on EXPERIMENT_MODE:
+    # - "worse": control converts at 75%, variation at 5% (chance_to_be_worse ~99% > 10%)
+    # - "winner": control converts at 20%, variation at 98% (chance_to_win > 99%, chance_to_be_worse < 1%)
+    # - "balanced": control converts at 35%, variation at 98%
     should_convert = True
-    if exp_variant == "control" and random.random() > 0.35:
-        should_convert = False
-    elif exp_variant != "control" and random.random() > 0.98:
-        should_convert = False
+    if EXPERIMENT_MODE == "worse":
+        if exp_variant == "control":
+            should_convert = (random.random() <= 0.75)
+        else:
+            should_convert = (random.random() <= 0.05)
+    elif EXPERIMENT_MODE == "winner":
+        if exp_variant == "control":
+            should_convert = (random.random() <= 0.20)
+        else:
+            should_convert = (random.random() <= 0.98)
+    else:
+        if exp_variant == "control":
+            should_convert = (random.random() <= 0.35)
+        else:
+            should_convert = (random.random() <= 0.98)
 
     if should_convert:
         try:
@@ -207,12 +221,25 @@ def reset_metrics():
     logger.info("Prometheus counter metrics cleared and zero-initialized")
     return jsonify({"status": "metrics_cleared"}), 200
 
+@app.route("/set-experiment-mode", methods=["POST", "GET"])
+def set_experiment_mode():
+    if not check_demo_auth():
+        return jsonify({"error": "Unauthorized: Invalid or missing API token"}), 401
+    global EXPERIMENT_MODE
+    val = request.args.get("mode") or ((request.get_json(silent=True) or {}).get("mode"))
+    if val in ("winner", "worse", "balanced"):
+        EXPERIMENT_MODE = val
+        logger.info(f"EXPERIMENT_MODE changed to: {EXPERIMENT_MODE}")
+        return jsonify({"status": "ok", "experiment_mode": EXPERIMENT_MODE}), 200
+    return jsonify({"error": f"Invalid mode '{val}'. Choose 'winner', 'worse', or 'balanced'"}), 400
+
 @app.route("/health")
 def health():
     return jsonify({
         "status": "healthy",
         "bug_enabled": BUG_IN_NEW_CHECKOUT,
         "simulate_srm": SIMULATE_SRM,
+        "experiment_mode": EXPERIMENT_MODE,
         "flagsmith_api": FLAGSMITH_API_URL,
     }), 200
 

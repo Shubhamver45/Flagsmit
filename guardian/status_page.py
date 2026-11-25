@@ -532,12 +532,12 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
       // Banner & Approve button
       const isAwaiting = data.state === 'AWAITING_APPROVAL';
-      const isEligible = data.experiment ? (data.experiment.is_eligible_for_approval !== false) : true;
+      const isEligible = (data.is_eligible_for_approval !== undefined) ? Boolean(data.is_eligible_for_approval) : (data.experiment ? (data.experiment.is_eligible_for_approval === true) : true);
       document.getElementById('awaiting-banner').style.display = isAwaiting ? 'flex' : 'none';
       const approveBtn = document.getElementById('btn-approve-action');
       approveBtn.disabled = !isAwaiting || !isEligible;
       if (isAwaiting && !isEligible) {
-        approveBtn.title = data.experiment?.block_reason || 'Approval blocked by experiment guardrail';
+        approveBtn.title = data.approval_block_reason || data.experiment?.block_reason || 'Approval blocked by experiment guardrail';
       } else {
         approveBtn.title = '';
       }

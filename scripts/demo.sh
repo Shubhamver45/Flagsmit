@@ -122,10 +122,15 @@ echo "========================================================================"
 echo "==> Verifying Flagsmith Admin Authentication via POST /api/v1/auth/login/:"
 ADMIN_EMAIL_VAL=$(python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env').get('ADMIN_EMAIL', 'admin@example.com'))")
 ADMIN_PASS_VAL=$(python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env').get('ADMIN_PASSWORD', ''))")
-LOGIN_TOKEN_RESP=$(curl -s -X POST "http://localhost:8000/api/v1/auth/login/" \
+LOGIN_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://localhost:8000/api/v1/auth/login/" \
   -H "Content-Type: application/json" \
   -d "{\"email\": \"${ADMIN_EMAIL_VAL}\", \"password\": \"${ADMIN_PASS_VAL}\"}")
-echo "  Auth Token Response: ${LOGIN_TOKEN_RESP}"
+if [ "$LOGIN_HTTP_CODE" = "200" ]; then
+    echo "  login OK"
+else
+    echo "  login FAILED (HTTP ${LOGIN_HTTP_CODE})"
+    exit 1
+fi
 
 if [ "$SERVE_MODE" -eq 1 ]; then
     echo "Running in SERVE mode. Press Ctrl+C to stop."
@@ -231,20 +236,25 @@ try:
         shortcut_tag = ' (demo shortcut)' if exp.get('demo_shortcut') else ''
         print(f\"  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of {exp.get('as_of')}{shortcut_tag}\")
         cw = exp.get('chance_to_be_worse')
-        cw_str = f\"{cw}%\" if cw is not None else \"n/a (collecting data)\"
+        cw_str = f\"{cw:.1f}%\" if isinstance(cw, (int, float)) else \"n/a (collecting data)\"
         print(f\"  • Chance to be Worse: {cw_str}\")
         srm_p = exp.get('srm_p_value')
         if exp.get('srm_warning'):
             srm_str = f\"WARNING (Corrupt, p-value: {srm_p:.6f})\" if srm_p is not None else \"WARNING (Corrupt)\"
         elif srm_p is not None:
-            srm_str = f\"Healthy (p-value: {srm_p})\"
+            srm_str = f\"Healthy (p-value: {srm_p:.4f})\" if isinstance(srm_p, float) else f\"Healthy (p-value: {srm_p})\"
         else:
             srm_str = \"Healthy (p-value: n/a (collecting data))\"
         print(f\"  • SRM Status        : {srm_str}\")
         srm_p_val_str = f\"{srm_p:.6f}\" if isinstance(srm_p, float) else (str(srm_p) if srm_p is not None else \"n/a (collecting data)\")
         print(f\"  • SRM p-value       : {srm_p_val_str}\")
         print(f\"  • Collecting Data   : {exp.get('is_collecting_data')}\")
-        print(f\"  • Approval Gate     : {'ELIGIBLE (Clear for 100% promotion)' if exp.get('is_eligible_for_approval') else 'BLOCKED: ' + str(exp.get('block_reason'))}\")
+        is_eligible = exp.get('is_eligible_for_approval')
+        block_reason = exp.get('block_reason')
+        if is_eligible:
+            print(\"  • Approval Gate     : ELIGIBLE (Clear for 100% promotion)\")
+        else:
+            print(f\"  • Approval Gate     : BLOCKED: {block_reason}\")
 except Exception as e:
     print('  Experiment telemetry check:', e)
 "
@@ -380,7 +390,7 @@ refresh_flagsmith_experiment
 print_guardian_experiment_status
 
 echo "Attempting operator approval while data is still collecting:"
-if python3 -m guardian.cli approve --by "operator" --reason "Premature approval attempt" 2>&1; then
+if python3 -m guardian.cli approve --by "operator" --reason "Attempted approval during data collection" 2>&1; then
     echo "❌ Error: Approval should have been blocked!"
     exit 1
 else
@@ -388,22 +398,49 @@ else
 fi
 
 echo ""
-echo "--- Phase 3: Clean Balanced Traffic & Human Operator Sign-off ---"
-echo "Generating balanced conversion events (simulated conversion rates: ~35% control, ~98% variation)..."
-PYTHONPATH=. python3 demo/simulator.py --requests 300 --identities 200 > /dev/null
+echo "--- Phase 2 (Scenario 2): Approval Gate Blocks on Underperforming (WORSE) Variation ---"
+echo "Setting experiment mode to 'worse' (control converts at 75%, variation converts at only 5%)..."
+curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=worse" | python3 -m json.tool
+echo "Generating traffic for worse variation to calculate statistical underperformance..."
+PYTHONPATH=. python3 demo/simulator.py --prefix worse_user --requests 250 --identities 200 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
 
 echo ""
-echo "==> Raw Flagsmith Experiment Results (Clean Statistical Inference):"
+echo "==> Raw Flagsmith Experiment Results (Variation Clearly Worse):"
 get_flagsmith_raw_results
 
 echo ""
-echo "==> Guardian Status Check (Gate Evaluation):"
+echo "==> Guardian Status Check (Gate Evaluation for Worse Variation):"
+print_guardian_experiment_status
+
+echo "Attempting operator approval while variation is underperforming:"
+if python3 -m guardian.cli approve --by "operator" --reason "Attempted approval with underperforming variation" 2>&1; then
+    echo "❌ Error: Approval should have been blocked for worse variation!"
+    exit 1
+else
+    echo "✔ As expected, operator approval is strictly BLOCKED by Guardian when variation is worse (chance to be worse > limit 10%)."
+fi
+
+echo ""
+echo "--- Phase 3: Happy-Path Scenario (WINNER Variation) & Human Operator Promotion ---"
+echo "Setting experiment mode to 'winner' (variation converts at 98%, control converts at 20%)..."
+curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=winner" | python3 -m json.tool
+echo "Generating traffic for winner variation demonstrating decisive positive lift..."
+PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 400 --identities 300 > /dev/null
+sleep 2
+refresh_flagsmith_experiment
+
+echo ""
+echo "==> Raw Flagsmith Experiment Results (Winner Variation Inference):"
+get_flagsmith_raw_results
+
+echo ""
+echo "==> Guardian Status Check (Gate Evaluation for Winner Variation):"
 print_guardian_experiment_status
 
 echo "Executing operator promotion approval:"
-if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check passed: lift positive, no SRM"; then
+if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: winner variation, no SRM"; then
     wait_for_state "PROMOTED" 10
     echo "✔ Feature flag successfully promoted to 100%!"
 else
@@ -533,8 +570,13 @@ python3 -c "
 import urllib.request, json
 data = json.loads(urllib.request.urlopen('http://localhost:8080/status').read())
 for e in data.get('timeline', []):
+    ts = e.get('timestamp', '')
+    dec = e.get('decision', 'INFO')
+    from_st = e.get('from_state', '?')
+    to_st = e.get('to_state', '?')
     pct = e.get('numbers', {}).get('target_percentage', e.get('numbers', {}).get('current_percentage', ''))
     pct_str = f' ({pct}%)' if pct != '' else ''
-    print(f\"  [{e.get('decision', 'INFO')}] {e.get('from_state', '?')} ➔ {e.get('to_state', '?')}{pct_str} | {e.get('reason', '')}\")
+    reason = e.get('reason', '')
+    print(f\"  [{ts}] [{dec}] {from_st} ➔ {to_st}{pct_str} | {reason}\")
 "
 echo "========================================================================"

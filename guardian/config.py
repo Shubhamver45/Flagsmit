@@ -56,6 +56,7 @@ class RolloutConfig:
     environment_key: str = ""
     slack_webhook_url: Optional[str] = None
     generic_webhook_url: Optional[str] = None
+    in_flight_grace_seconds: float = 5.0
 
     def __post_init__(self):
         if not self.flag_name:
@@ -69,6 +70,8 @@ class RolloutConfig:
             raise ValueError(f"Stages must be in ascending order: {self.stages}")
         if self.soak_time_seconds < 0:
             raise ValueError("soak_time_seconds must be non-negative")
+        if self.in_flight_grace_seconds < 0:
+            raise ValueError("in_flight_grace_seconds must be non-negative")
 
     @property
     def rollouts(self) -> List[RolloutConfig]:
@@ -83,6 +86,7 @@ class RolloutConfig:
 class GuardianConfig:
     rollouts: List[RolloutConfig] = field(default_factory=list)
     db_path: str = "./data/guardian.db"
+    in_flight_grace_seconds: float = 5.0
 
     @property
     def primary_rollout(self) -> RolloutConfig:
@@ -168,6 +172,7 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
         environment_key=data.get("environment_key", ""),
         slack_webhook_url=data.get("slack_webhook_url"),
         generic_webhook_url=data.get("generic_webhook_url"),
+        in_flight_grace_seconds=float(data.get("in_flight_grace_seconds", os.environ.get("GUARDIAN_IN_FLIGHT_GRACE_SECONDS", 5.0))),
     )
 
 
@@ -233,4 +238,5 @@ def load_config(file_path: str | Path = "config.yaml") -> Union[RolloutConfig, G
         require_approval_before_final=approval,
         guardrails=guardrails,
         environment_key=env_key,
+        in_flight_grace_seconds=float(os.environ.get("GUARDIAN_IN_FLIGHT_GRACE_SECONDS", 5.0)),
     )

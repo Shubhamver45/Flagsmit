@@ -293,3 +293,126 @@ def test_drift_via_polling_only(test_setup):
     results = engine.reconcile_runtime()
     assert results["new_checkout"]["drift"] is False
     assert engine.drift_flags["new_checkout"]["detected"] is False
+
+
+def test_zero_drift_with_write_latency_and_high_frequency_reconciler(tmp_path):
+    """
+    Integration test asserting ZERO false drift events occur during a full
+    1 -> 5 -> 25 -> 100 rollout even when remote Flagsmith writes experience latency
+    and the reconciler runs at high frequency.
+    Also verifies that genuine out-of-band drift is still caught immediately.
+    """
+    import threading
+    import time
+
+    class LatencyFlagsmithClient:
+        def __init__(self, latency: float = 0.03):
+            self.latency = latency
+            self.percentage = 0.0
+            self.enabled = False
+            self._lock = threading.Lock()
+
+        def get_percentage_rollout(self, flag_name: str) -> float:
+            with self._lock:
+                return self.percentage if self.enabled else 0.0
+
+        def set_percentage_rollout(self, flag_name: str, percentage: float):
+            target = float(percentage)
+            def delayed():
+                time.sleep(self.latency)
+                with self._lock:
+                    self.percentage = target
+                    self.enabled = target > 0.0
+            threading.Thread(target=delayed, daemon=True).start()
+            return {"status": "ok"}
+
+        def rollback_to_zero(self, flag_name: str, reason: str = ""):
+            with self._lock:
+                self.percentage = 0.0
+                self.enabled = False
+            return {"status": "rolled_back"}
+
+    db_file = tmp_path / "latency_guardian.db"
+    storage = GuardianStorage(db_path=db_file)
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=0,
+        in_flight_grace_seconds=2.0,
+    )
+    client = LatencyFlagsmithClient(latency=0.03)
+    engine = GuardianEngine(
+        config=cfg,
+        flagsmith_client=client,
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+
+    # Run reconciler at high frequency (every 5ms) in background
+    stop_event = threading.Event()
+    drift_seen = []
+
+    def run_reconciler():
+        while not stop_event.is_set():
+            res = engine.reconcile_runtime()
+            if res.get("new_checkout", {}).get("drift"):
+                drift_seen.append(res)
+            time.sleep(0.005)
+
+    recon_thread = threading.Thread(target=run_reconciler, daemon=True)
+    recon_thread.start()
+
+    try:
+        t = 100.0
+        # 1. PENDING -> STAGE_1 (1%)
+        engine.tick(now=t)
+        time.sleep(0.04)
+
+        # 2. STAGE_1 -> STAGE_2 (5%)
+        t += 1.0
+        engine.tick(now=t)
+        time.sleep(0.04)
+
+        # 3. STAGE_2 -> STAGE_3 (25%)
+        t += 1.0
+        engine.tick(now=t)
+        time.sleep(0.04)
+
+        # 4. STAGE_3 -> AWAITING_APPROVAL
+        t += 1.0
+        engine.tick(now=t)
+        assert engine.current_state == "AWAITING_APPROVAL"
+        time.sleep(0.04)
+
+        # 5. Approve -> PROMOTED (100%)
+        t += 1.0
+        engine.approve(now=t)
+        assert engine.current_state == "PROMOTED"
+        assert engine.current_percentage == 100.0
+
+        # Wait for delayed writes to settle
+        time.sleep(0.08)
+
+        # Assert ZERO false drift events occurred
+        assert len(drift_seen) == 0, f"False drift occurred during rollout: {drift_seen}"
+        assert engine.drift_flags["new_checkout"]["detected"] is False
+
+        # Verify audit log contains zero false DRIFT entries
+        audit_entries = storage.get_audit_entries(flag_name="new_checkout")
+        drift_audits = [e for e in audit_entries if e["decision"] == "DRIFT"]
+        assert len(drift_audits) == 0, f"False drift audit entries found: {drift_audits}"
+
+        # 6. Real out-of-band change by ops-engineer (to 50.0%)
+        with client._lock:
+            client.percentage = 50.0
+        time.sleep(0.03)
+
+        # Reconciler must catch real drift
+        assert len(drift_seen) > 0, "Real drift was not caught by reconciler!"
+        assert engine.drift_flags["new_checkout"]["detected"] is True
+        assert engine.drift_flags["new_checkout"]["actual_percentage"] == 50.0
+
+    finally:
+        stop_event.set()
+        recon_thread.join(timeout=1.0)
+

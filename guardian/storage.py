@@ -208,22 +208,32 @@ class GuardianStorage:
     def get_audit_entries(
         self,
         flag_name: Optional[str] = None,
-        limit: int = 100,
+        limit: Optional[int] = None,
+        order: str = "ASC",
     ) -> List[Dict[str, Any]]:
+        order_col = "id ASC" if order.upper() == "ASC" else "id DESC"
         with self._lock:
             if flag_name:
-                cur = self._conn.execute(
-                    """
-                    SELECT * FROM audit_log WHERE flag_name = ?
-                    ORDER BY id DESC LIMIT ?
-                    """,
-                    (flag_name, limit),
-                )
+                if limit is not None:
+                    cur = self._conn.execute(
+                        f"SELECT * FROM audit_log WHERE flag_name = ? ORDER BY {order_col} LIMIT ?",
+                        (flag_name, limit),
+                    )
+                else:
+                    cur = self._conn.execute(
+                        f"SELECT * FROM audit_log WHERE flag_name = ? ORDER BY {order_col}",
+                        (flag_name,),
+                    )
             else:
-                cur = self._conn.execute(
-                    "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?",
-                    (limit,),
-                )
+                if limit is not None:
+                    cur = self._conn.execute(
+                        f"SELECT * FROM audit_log ORDER BY {order_col} LIMIT ?",
+                        (limit,),
+                    )
+                else:
+                    cur = self._conn.execute(
+                        f"SELECT * FROM audit_log ORDER BY {order_col}"
+                    )
             rows = cur.fetchall()
             entries = []
             for r in rows:
