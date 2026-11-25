@@ -150,7 +150,7 @@ def checkout():
             should_convert = (random.random() <= 0.05)
     elif EXPERIMENT_MODE == "winner":
         if exp_variant == "control":
-            should_convert = (random.random() <= 0.20)
+            should_convert = (random.random() <= 0.10)
         else:
             should_convert = (random.random() <= 0.98)
     else:

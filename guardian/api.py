@@ -123,12 +123,18 @@ def create_app(engine: GuardianEngine, api_token: Optional[str] = None) -> FastA
         return engine.handle_flagsmith_webhook(payload)
 
     @app.get("/status")
-    def get_status(flag_name: Optional[str] = None) -> Dict[str, Any]:
-        return engine.get_status(flag_name=flag_name)
+    def get_status(
+        flag_name: Optional[str] = None,
+        full: bool = Query(False, description="Return full audit trail if true, last 20 by default"),
+    ) -> Dict[str, Any]:
+        return engine.get_status(flag_name=flag_name, full=full)
 
     @app.get("/rollouts/{flag_name}/status")
-    def get_rollout_status(flag_name: str) -> Dict[str, Any]:
-        return engine.get_status(flag_name=flag_name)
+    def get_rollout_status(
+        flag_name: str,
+        full: bool = Query(False, description="Return full audit trail if true, last 20 by default"),
+    ) -> Dict[str, Any]:
+        return engine.get_status(flag_name=flag_name, full=full)
 
     @app.post("/approve", dependencies=[Depends(verify_write_token)])
     def approve(

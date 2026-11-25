@@ -24,6 +24,7 @@ class Guardrail:
     metric_id: Optional[int] = None
     action_on_srm: str = "ROLLBACK"  # ROLLBACK or HOLD
     description: str = ""
+    require_winner: bool = False
 
     def evaluate(self, current_value: float) -> bool:
         """
@@ -57,6 +58,7 @@ class RolloutConfig:
     slack_webhook_url: Optional[str] = None
     generic_webhook_url: Optional[str] = None
     in_flight_grace_seconds: float = 5.0
+    require_winner: bool = False
 
     def __post_init__(self):
         if not self.flag_name:
@@ -142,6 +144,11 @@ class GuardianConfig:
         return self.primary_rollout.generic_webhook_url
 
 
+    @property
+    def require_winner(self) -> bool:
+        return self.primary_rollout.require_winner
+
+
 def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
     raw_guardrails = data.get("guardrails", [])
     guardrails = [
@@ -157,6 +164,7 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
             metric_id=g.get("metric_id"),
             action_on_srm=g.get("action_on_srm", "ROLLBACK"),
             description=g.get("description", ""),
+            require_winner=bool(g.get("require_winner", False)),
         )
         for g in raw_guardrails
     ]
@@ -173,6 +181,7 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
         slack_webhook_url=data.get("slack_webhook_url"),
         generic_webhook_url=data.get("generic_webhook_url"),
         in_flight_grace_seconds=float(data.get("in_flight_grace_seconds", os.environ.get("GUARDIAN_IN_FLIGHT_GRACE_SECONDS", 5.0))),
+        require_winner=bool(data.get("require_winner", False)),
     )
 
 

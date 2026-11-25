@@ -202,8 +202,7 @@ def setup_via_admin_api(
                 timeout=5,
             )
             auth_resp.raise_for_status()
-            auth_key = auth_resp.json().get("key", "")
-            print(f"  ✔ Verified Admin login via POST /api/v1/auth/login/ (token received: {auth_key[:8]}...)")
+            print("  ✔ Verified Admin login via POST /api/v1/auth/login/ (login OK)")
         except Exception as e:
             print(f"  ⚠️ Admin login verification failed: {e}", file=sys.stderr)
 
@@ -311,8 +310,11 @@ def setup_via_admin_api(
         },
     )
     m_res.raise_for_status()
-    metric_id = m_res.json()["id"]
-    print(f"  ✔ Created metric 'Checkout Completed' via Admin API (ID={metric_id})")
+    m_data = m_res.json()
+    metric_id = m_data["id"]
+    agg_type = m_data.get("aggregation", "count")
+    print(f"  ✔ Created metric 'Checkout Completed' via Admin API (ID={metric_id}, aggregation='{agg_type}')")
+    print(f"    ℹ Note on aggregation='{agg_type}': tracks occurrence count per user identity (sum can exceed n when users complete multiple checkouts)")
 
     # 5. Create Experiment: Checkout A/B Experiment
     exp_res = requests.post(

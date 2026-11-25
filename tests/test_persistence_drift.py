@@ -283,3 +283,187 @@ def test_startup_reconciliation_and_drift_detection(tmp_path):
     assert status_after["drift"]["detected"] is False
 
     storage.close()
+
+
+def test_collapse_consecutive_identical_hold_decisions(tmp_path):
+    db_file = tmp_path / "collapse_test.db"
+    storage = GuardianStorage(db_path=db_file)
+
+    cfg = RolloutConfig(
+        flag_name="collapse_flag",
+        stages=[1, 5, 25, 100],
+        soak_time_seconds=60,
+    )
+    client = MockFlagsmithClient()
+    engine = GuardianEngine(config=cfg, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # Initial tick: PENDING -> STAGE_1
+    t0 = 1000.0
+    engine.tick(now=t0)
+    entries = storage.get_audit_entries(flag_name="collapse_flag")
+    assert len(entries) == 1
+    assert entries[0]["decision"] == "ADVANCE"
+
+    # 10 consecutive ticks while soaking in STAGE_1 (each produces HOLD)
+    for i in range(1, 11):
+        engine.tick(now=t0 + i)
+
+    # Should have collapsed consecutive HOLDs into a single row!
+    entries_after = storage.get_audit_entries(flag_name="collapse_flag")
+    assert len(entries_after) == 2  # 1 ADVANCE + 1 collapsed HOLD
+    hold_entry = entries_after[1]
+    assert hold_entry["decision"] == "HOLD"
+    assert hold_entry["count"] == 10
+    assert hold_entry["first_timestamp"] is not None
+    assert hold_entry["last_timestamp"] is not None
+
+    # Verify bounded pruning keeps SQLite bounded
+    for i in range(50):
+        storage.record_audit(
+            timestamp=f"2026-01-01T00:00:{i:02d}",
+            flag_name="dummy_flag",
+            from_state="A",
+            to_state="B",
+            decision="ADVANCE",
+            reason=f"step {i}",
+            numbers={},
+        )
+    storage.prune_audit_log(max_entries=25)
+    all_entries = storage.get_audit_entries()
+    assert len(all_entries) <= 25
+
+    storage.close()
+
+
+def test_status_endpoint_full_vs_default_20(tmp_path):
+    db_file = tmp_path / "status_full_test.db"
+    storage = GuardianStorage(db_path=db_file)
+
+    cfg = RolloutConfig(flag_name="status_test_flag", stages=[1, 5, 25, 100])
+    client = MockFlagsmithClient()
+    engine = GuardianEngine(config=cfg, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # Insert 35 distinct decision entries
+    for i in range(35):
+        storage.record_audit(
+            timestamp=f"2026-01-01T00:{i:02d}:00",
+            flag_name="status_test_flag",
+            from_state="S1",
+            to_state="S2",
+            decision=f"DEC_{i}",
+            reason=f"reason {i}",
+            numbers={"step": i},
+        )
+
+    # Default call to get_status returns last 20 entries
+    default_status = engine.get_status(full=False)
+    assert len(default_status["timeline"]) == 20
+    # Must be in chronological order ending with DEC_34
+    assert default_status["timeline"][-1]["decision"] == "DEC_34"
+    assert default_status["timeline"][0]["decision"] == "DEC_15"
+
+    # Full=True returns all 35
+    full_status = engine.get_status(full=True)
+    assert len(full_status["timeline"]) == 35
+    assert full_status["timeline"][0]["decision"] == "DEC_0"
+    assert full_status["timeline"][-1]["decision"] == "DEC_34"
+
+    storage.close()
+
+
+def test_require_winner_gate_semantics(tmp_path):
+    db_file = tmp_path / "winner_gate_test.db"
+    storage = GuardianStorage(db_path=db_file)
+
+    # 1. Config with require_winner = True
+    cfg_winner = RolloutConfig(
+        flag_name="winner_flag",
+        stages=[1, 5, 25, 100],
+        require_winner=True,
+    )
+    client = MockFlagsmithClient()
+    engine = GuardianEngine(config=cfg_winner, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # Save experiment results with inconclusive / negative interval: chance_to_win=0.92 (<0.95), ci_low=-0.05
+    storage.save_experiment_results("winner_flag", {
+        "as_of": "2026-01-01T00:00:00Z",
+        "chance_to_win": 0.92,
+        "chance_to_be_worse": 8.0,
+        "ci_low": -0.05,
+        "ci_high": 0.50,
+        "srm_p_value": 0.50,
+    })
+
+    eligible, reason = engine.check_approval_eligibility("winner_flag")
+    assert eligible is False
+    assert "require_winner is enabled" in reason
+
+    # Save experiment results with decisive win: chance_to_win=0.99 (>=0.95), ci_low=0.20 (>0)
+    storage.save_experiment_results("winner_flag", {
+        "as_of": "2026-01-01T00:01:00Z",
+        "chance_to_win": 0.99,
+        "chance_to_be_worse": 1.0,
+        "ci_low": 0.20,
+        "ci_high": 0.80,
+        "srm_p_value": 0.50,
+    })
+
+    eligible, reason = engine.check_approval_eligibility("winner_flag")
+    assert eligible is True
+    assert reason is None
+
+    # 2. Config with default require_winner = False (no evidence of harm)
+    cfg_default = RolloutConfig(
+        flag_name="harm_flag",
+        stages=[1, 5, 25, 100],
+        require_winner=False,
+    )
+    engine_default = GuardianEngine(config=cfg_default, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # chance_to_win=0.92 (ci_low=-0.05), but chance_to_be_worse=8.0% <= threshold 10%
+    storage.save_experiment_results("harm_flag", {
+        "as_of": "2026-01-01T00:02:00Z",
+        "chance_to_win": 0.92,
+        "chance_to_be_worse": 8.0,
+        "ci_low": -0.05,
+        "ci_high": 0.50,
+        "srm_p_value": 0.50,
+    })
+    eligible_harm, _ = engine_default.check_approval_eligibility("harm_flag")
+    assert eligible_harm is True
+
+    storage.close()
+
+
+def test_webhook_drift_deduplication(tmp_path):
+    db_file = tmp_path / "webhook_dedup_test.db"
+    storage = GuardianStorage(db_path=db_file)
+
+    cfg = RolloutConfig(flag_name="dedup_flag", stages=[1, 5, 25, 100])
+    client = MockFlagsmithClient(initial_percentages={"dedup_flag": 1.0})
+    engine = GuardianEngine(config=cfg, flagsmith_client=client, storage=storage, skip_startup_reconciliation=True)
+
+    # First webhook: out-of-band change to 50%
+    payload = {
+        "event_type": "FLAG_UPDATED",
+        "data": {
+            "changed_by": "ops-engineer",
+            "new_state": {
+                "enabled": True,
+                "feature": {"name": "dedup_flag"},
+                "multivariate_feature_state_values": [{"percentage_allocation": 50.0}],
+            },
+        },
+    }
+    res1 = engine.handle_flagsmith_webhook(payload)
+    assert res1["status"] == "drift_detected"
+
+    # Second identical webhook arrives immediately (duplicate delivery)
+    res2 = engine.handle_flagsmith_webhook(payload)
+    assert res2["status"] == "drift_already_active"
+
+    # Verify only ONE audit entry was recorded for DRIFT
+    drift_entries = [e for e in storage.get_audit_entries(flag_name="dedup_flag") if e["decision"] == "DRIFT"]
+    assert len(drift_entries) == 1
+
+    storage.close()

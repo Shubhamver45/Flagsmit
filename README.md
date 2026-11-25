@@ -123,9 +123,12 @@ Guardian links two separate feature flags to combine operational safety with sta
 Before Guardian permits promotion to 100% at the `AWAITING_APPROVAL` gate, it queries Flagsmith's experiment results for `checkout_experiment`. The promotion approval is strictly blocked if:
 * **Flagsmith is still collecting data** (fewer than 50 identities per arm or fewer than 5 conversions).
 * **Sample Ratio Mismatch (SRM) occurs** ($p < 0.001$), detecting corrupted variant traffic assignment (e.g. dropped exposure events on one variant).
-* **Bayesian `chance_to_be_worse`** exceeds the configured guardrail limit.
+* **Bayesian `chance_to_be_worse`** exceeds the configured guardrail limit (e.g., 10.0%).
+* **`require_winner: true` is configured and variation is not a decisive winner**: When `require_winner: true` is set, Guardian strictly requires `chance_to_win >= 95%` and credible interval low above zero (`ci_low > 0`). When `require_winner: false` (default mode), the gate operates on "no evidence of harm" semantics, allowing promotion whenever `chance_to_be_worse <= threshold`.
 
-Only when `checkout_experiment` demonstrates statistically valid positive or non-inferior conversion performance with a healthy SRM p-value is the operator approval gate unlocked.
+The human approval reason text recorded in the audit trail matches the evaluation mode:
+* In default mode (`require_winner: false`): *"Pre-promotion health check verified: no evidence of harm (chance to be worse <= limit), no SRM"*
+* In decisive winner mode (`require_winner: true`): *"Pre-promotion health check verified: decisive winner (chance to win >= 95%, CI interval above zero), no SRM"*
 
 ### Experiment Recalculation & Quickstart Mode (`DEMO_FORCE_RECALC=1`)
 
@@ -303,6 +306,7 @@ docker run -d \
 #### Step 4: Monitor Rollout Status
 View the live rollout progression, metric evaluations, and audit trail:
 * **Web UI Dashboard**: Navigate to `http://localhost:8080/`
+* **REST API**: `GET http://localhost:8080/status` (returns live rollout status and the last 20 audit entries by default; pass `?full=1` to retrieve the full historical audit trail).
 * **CLI Status Check**:
   ```bash
   python3 -m guardian.cli status
@@ -418,6 +422,7 @@ Connects directly to Flagsmith's Bayesian Experimentation engine to ensure busin
 | `stages` | list[float] | Percentage allocations (must be strictly increasing, starting > 0, ending at 100). |
 | `soak_time_seconds` | integer | Dwell time per stage before evaluation allows advancement. |
 | `require_approval_before_final` | boolean | If `true`, pauses at `AWAITING_APPROVAL` before the final stage. |
+| `require_winner` | boolean | (Optional, default `false`) If `true`, blocks promotion unless variation has `chance_to_win >= 95%` and `ci_low > 0`. |
 | `slack_webhook_url` | string | (Optional) Slack incoming webhook URL for BlockKit alerts. |
 | `generic_webhook_url` | string | (Optional) Generic HTTP endpoint for JSON audit payloads. |
 | `guardrails[].name` | string | Identifier for the guardrail. |

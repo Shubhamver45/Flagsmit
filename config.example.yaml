@@ -16,6 +16,10 @@ soak_time_seconds: 30
 # Gate final 100% stage behind explicit human approval
 require_approval_before_final: true
 
+# Gate semantics: when require_winner is true, approval requires chance_to_win >= 95% and credible interval low > 0.
+# When false (default), approval blocks on evidence of harm (chance_to_be_worse > threshold).
+require_winner: false
+
 # Guardrail metric triggers: error rate on new variant must not exceed 5%
 guardrails:
   - name: "new_flow_error_rate"

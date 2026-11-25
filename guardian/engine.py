@@ -182,6 +182,7 @@ class GuardianEngine:
         what Guardian last wrote to SQLite. If it differs, pauses the rollout with DRIFT
         warning, dispatches alerts, and updates SQLite state.
         Guardian's own writes must NOT trigger drift.
+        Deduplicates identical drift events within the grace window.
         """
         event_type = payload.get("event_type")
         if event_type != "FLAG_UPDATED":
@@ -196,131 +197,146 @@ class GuardianEngine:
         if not flag_name or flag_name not in self.rollout_configs:
             return {"status": "ignored", "reason": f"Flag '{flag_name}' is not managed by Guardian"}
 
-        sm = self.state_machines[flag_name]
-        saved = self.storage.load_rollout_state(flag_name)
-        stored_pct = saved["current_percentage"] if saved else sm.current_percentage
-        sm_pct = sm.current_percentage
-        stored_state = sm.current_state if sm.current_state != "PENDING" else (saved["current_state"] if saved else "PENDING")
-        expected_pct = sm.current_percentage if sm.current_percentage > 0.0 else stored_pct
+        with self._reconcile_lock:
+            sm = self.state_machines[flag_name]
+            saved = self.storage.load_rollout_state(flag_name)
+            stored_pct = saved["current_percentage"] if saved else sm.current_percentage
+            sm_pct = sm.current_percentage
+            stored_state = sm.current_state if sm.current_state != "PENDING" else (saved["current_state"] if saved else "PENDING")
+            expected_pct = sm.current_percentage if sm.current_percentage > 0.0 else stored_pct
 
-        is_enabled = bool(new_state.get("enabled", False))
-        mv_values = new_state.get("multivariate_feature_state_values", [])
+            is_enabled = bool(new_state.get("enabled", False))
+            mv_values = new_state.get("multivariate_feature_state_values", [])
 
-        if not is_enabled:
-            actual_pct = 0.0
-        elif mv_values:
-            actual_pct = float(mv_values[0].get("percentage_allocation", 0.0))
-        else:
-            actual_pct = 100.0 if is_enabled else 0.0
+            if not is_enabled:
+                actual_pct = 0.0
+            elif mv_values:
+                actual_pct = float(mv_values[0].get("percentage_allocation", 0.0))
+            else:
+                actual_pct = 100.0 if is_enabled else 0.0
 
-        # Check if standard boolean flag match
-        is_standard_flag_match = False
-        if not mv_values and is_enabled and (stored_pct > 0.0 or sm_pct > 0.0):
-            is_standard_flag_match = True
+            # Check if standard boolean flag match
+            is_standard_flag_match = False
+            if not mv_values and is_enabled and (stored_pct > 0.0 or sm_pct > 0.0):
+                is_standard_flag_match = True
 
-        # Check if this write is an in-flight Guardian transition within the grace window
-        in_flight = self.in_flight_transitions.get(flag_name)
-        is_in_flight = False
-        if in_flight and time.time() < in_flight.get("expires_at", 0):
-            prev_in_flight = in_flight.get("previous_percentage", -1.0)
-            target_in_flight = in_flight.get("target_percentage", -1.0)
-            if abs(actual_pct - prev_in_flight) <= 0.01 or abs(actual_pct - target_in_flight) <= 0.01:
-                is_in_flight = True
-                if abs(actual_pct - target_in_flight) <= 0.01:
-                    self.in_flight_transitions.pop(flag_name, None)
+            # Check if this write is an in-flight Guardian transition within the grace window
+            in_flight = self.in_flight_transitions.get(flag_name)
+            is_in_flight = False
+            if in_flight and time.time() < in_flight.get("expires_at", 0):
+                prev_in_flight = in_flight.get("previous_percentage", -1.0)
+                target_in_flight = in_flight.get("target_percentage", -1.0)
+                if abs(actual_pct - prev_in_flight) <= 0.01 or abs(actual_pct - target_in_flight) <= 0.01:
+                    is_in_flight = True
+                    if abs(actual_pct - target_in_flight) <= 0.01:
+                        self.in_flight_transitions.pop(flag_name, None)
 
-        matches_expected = (
-            is_standard_flag_match
-            or is_in_flight
-            or abs(actual_pct - stored_pct) <= 0.01
-            or abs(actual_pct - sm_pct) <= 0.01
-        )
+            matches_expected = (
+                is_standard_flag_match
+                or is_in_flight
+                or abs(actual_pct - stored_pct) <= 0.01
+                or abs(actual_pct - sm_pct) <= 0.01
+            )
 
-        if matches_expected:
-            if self.drift_flags.get(flag_name, {}).get("detected"):
-                resolve_msg = f"Drift resolved via webhook: flag '{flag_name}' restored to expected {expected_pct}% ({stored_state})."
-                logger.info(f"✔ {resolve_msg}")
-                self.drift_flags[flag_name] = {"detected": False}
-                self.storage.save_rollout_state(
-                    flag_name=flag_name,
-                    current_state=stored_state,
-                    current_stage_index=sm.current_stage_index,
-                    stage_entered_at=sm.stage_entered_at,
-                    current_percentage=expected_pct,
-                    is_approved=sm.is_approved,
-                    drift_detected=False,
-                    drift_details=None,
-                )
-                entry = self.audit_logger.record(
-                    flag_name=flag_name,
-                    from_state=stored_state,
-                    to_state=stored_state,
-                    decision="RESOLVED",
-                    reason=f"[DRIFT RESOLVED via Webhook] {resolve_msg}",
-                    numbers={
-                        "target_percentage": expected_pct,
-                        "actual_percentage": actual_pct,
-                        "expected_percentage": expected_pct,
-                        "source": "webhook",
-                    },
-                )
-                self.alert_dispatcher.dispatch(entry)
-            logger.info(f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%). No drift.")
-            return {
-                "status": "ok",
-                "message": f"Flag '{flag_name}' state matches expected state ({expected_pct}%).",
-                "flag_name": flag_name,
-            }
+            if matches_expected:
+                if self.drift_flags.get(flag_name, {}).get("detected"):
+                    resolve_msg = f"Drift resolved via webhook: flag '{flag_name}' restored to expected {expected_pct}% ({stored_state})."
+                    logger.info(f"✔ {resolve_msg}")
+                    self.drift_flags[flag_name] = {"detected": False}
+                    self.storage.save_rollout_state(
+                        flag_name=flag_name,
+                        current_state=stored_state,
+                        current_stage_index=sm.current_stage_index,
+                        stage_entered_at=sm.stage_entered_at,
+                        current_percentage=expected_pct,
+                        is_approved=sm.is_approved,
+                        drift_detected=False,
+                        drift_details=None,
+                    )
+                    entry = self.audit_logger.record(
+                        flag_name=flag_name,
+                        from_state=stored_state,
+                        to_state=stored_state,
+                        decision="RESOLVED",
+                        reason=f"[DRIFT RESOLVED via Webhook] {resolve_msg}",
+                        numbers={
+                            "target_percentage": expected_pct,
+                            "actual_percentage": actual_pct,
+                            "expected_percentage": expected_pct,
+                            "source": "webhook",
+                        },
+                    )
+                    self.alert_dispatcher.dispatch(entry)
+                logger.info(f"✔ Webhook for '{flag_name}': actual ({actual_pct}%) matches expected ({expected_pct}%). No drift.")
+                return {
+                    "status": "ok",
+                    "message": f"Flag '{flag_name}' state matches expected state ({expected_pct}%).",
+                    "flag_name": flag_name,
+                }
 
-        # Out-of-band change detected!
-        drift_msg = (
-            f"Flag '{flag_name}' modified out-of-band by {changed_by}: "
-            f"actual {actual_pct}% differs from expected {expected_pct}% ({stored_state})."
-        )
-        logger.warning(f"⚠️  [DRIFT DETECTED via Webhook] {drift_msg} Holding rollout.")
-        drift_info = {
-            "detected": True,
-            "source": "webhook",
-            "changed_by": changed_by,
-            "actual_percentage": actual_pct,
-            "expected_percentage": expected_pct,
-            "stored_state": stored_state,
-            "message": drift_msg,
-            "timestamp": data.get("timestamp") or time.time(),
-        }
-        self.drift_flags[flag_name] = drift_info
-        self.storage.save_rollout_state(
-            flag_name=flag_name,
-            current_state=stored_state,
-            current_stage_index=sm.current_stage_index,
-            stage_entered_at=sm.stage_entered_at,
-            current_percentage=expected_pct,
-            is_approved=sm.is_approved,
-            drift_detected=True,
-            drift_details=drift_info,
-        )
+            # Deduplicate identical drift events (same flag, actual, and expected within grace window)
+            current_drift = self.drift_flags.get(flag_name, {})
+            if (
+                current_drift.get("detected")
+                and abs(float(current_drift.get("actual_percentage", -1.0)) - actual_pct) <= 0.01
+                and abs(float(current_drift.get("expected_percentage", -1.0)) - expected_pct) <= 0.01
+                and (time.time() - float(current_drift.get("timestamp", 0.0))) < self.in_flight_grace_seconds
+            ):
+                return {
+                    "status": "drift_already_active",
+                    "flag_name": flag_name,
+                    "drift": current_drift,
+                }
 
-        entry = self.audit_logger.record(
-            flag_name=flag_name,
-            from_state=stored_state,
-            to_state=stored_state,
-            decision="DRIFT",
-            reason=f"[DRIFT DETECTED via Webhook] {drift_msg}",
-            numbers={
-                "target_percentage": actual_pct,
+            # Out-of-band change detected!
+            drift_msg = (
+                f"Flag '{flag_name}' modified out-of-band by {changed_by}: "
+                f"actual {actual_pct}% differs from expected {expected_pct}% ({stored_state})."
+            )
+            logger.warning(f"⚠️  [DRIFT DETECTED via Webhook] {drift_msg} Holding rollout.")
+            drift_info = {
+                "detected": True,
+                "source": "webhook",
                 "changed_by": changed_by,
                 "actual_percentage": actual_pct,
                 "expected_percentage": expected_pct,
-                "source": "webhook",
-            },
-        )
-        self.alert_dispatcher.dispatch(entry)
+                "stored_state": stored_state,
+                "message": drift_msg,
+                "timestamp": data.get("timestamp") or time.time(),
+            }
+            self.drift_flags[flag_name] = drift_info
+            self.storage.save_rollout_state(
+                flag_name=flag_name,
+                current_state=stored_state,
+                current_stage_index=sm.current_stage_index,
+                stage_entered_at=sm.stage_entered_at,
+                current_percentage=expected_pct,
+                is_approved=sm.is_approved,
+                drift_detected=True,
+                drift_details=drift_info,
+            )
 
-        return {
-            "status": "drift_detected",
-            "flag_name": flag_name,
-            "drift": drift_info,
-        }
+            entry = self.audit_logger.record(
+                flag_name=flag_name,
+                from_state=stored_state,
+                to_state=stored_state,
+                decision="DRIFT",
+                reason=f"[DRIFT DETECTED via Webhook] {drift_msg}",
+                numbers={
+                    "target_percentage": actual_pct,
+                    "changed_by": changed_by,
+                    "actual_percentage": actual_pct,
+                    "expected_percentage": expected_pct,
+                    "source": "webhook",
+                },
+            )
+            self.alert_dispatcher.dispatch(entry)
+
+            return {
+                "status": "drift_detected",
+                "flag_name": flag_name,
+                "drift": drift_info,
+            }
 
     def reconcile_runtime(self) -> Dict[str, Any]:
         """
@@ -568,7 +584,7 @@ class GuardianEngine:
                     "expires_at": time.time() + self.in_flight_grace_seconds,
                     "source": "guardian",
                 }
-                # Persist updated rollout state to SQLite FIRST before remote Flagsmith write
+                # Persist updated rollout state and audit record to SQLite FIRST before remote Flagsmith write
                 self.storage.save_rollout_state(
                     flag_name=flag_name,
                     current_state=new_state,
@@ -579,6 +595,14 @@ class GuardianEngine:
                     drift_detected=False,
                     drift_details=None,
                     now=now,
+                )
+                entry = self.audit_logger.record(
+                    flag_name=flag_name,
+                    from_state=prev_state,
+                    to_state=new_state,
+                    decision=decision.value,
+                    reason=reason,
+                    numbers=numbers,
                 )
 
                 if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
@@ -592,6 +616,9 @@ class GuardianEngine:
                     to_state=new_state,
                     stage_index=stage_idx,
                 )
+                if decision.value != "HOLD":
+                    self.alert_dispatcher.dispatch(entry)
+                return entry
             else:
                 # Persist updated rollout state to SQLite
                 self.storage.save_rollout_state(
@@ -605,21 +632,15 @@ class GuardianEngine:
                     drift_details=None,
                     now=now,
                 )
-
-            entry = self.audit_logger.record(
-                flag_name=flag_name,
-                from_state=prev_state,
-                to_state=new_state,
-                decision=decision.value,
-                reason=reason if should_run else f"[Idempotent Re-evaluation] {reason}",
-                numbers=numbers,
-            )
-
-            # Dispatch alerts on newly executed state changes
-            if should_run and decision.value != "HOLD":
-                self.alert_dispatcher.dispatch(entry)
-
-            return entry
+                entry = self.audit_logger.record(
+                    flag_name=flag_name,
+                    from_state=prev_state,
+                    to_state=new_state,
+                    decision=decision.value,
+                    reason=f"[Idempotent Re-evaluation] {reason}" if prev_state == new_state and decision.value != "HOLD" else reason,
+                    numbers=numbers,
+                )
+                return entry
 
     # -------------------------------------------------------------------------
     # Human Operator Actions
@@ -683,6 +704,22 @@ class GuardianEngine:
                         if chance_worse > g.threshold:
                             return False, f"Approval blocked: Bayesian chance-to-be-worse ({chance_worse:.1f}%) exceeds configured limit ({g.threshold:.1f}%)."
 
+            # 3b. Optional require_winner Check (chance_to_win >= 95% and CI interval above zero)
+            require_winner = getattr(rc, "require_winner", False) or any(
+                getattr(g, "require_winner", False) for g in rc.guardrails
+            )
+            if require_winner:
+                cwin = details.get("chance_to_win")
+                ci_low = details.get("ci_low")
+                if cwin is not None and ci_low is not None:
+                    cwin_val = float(cwin)
+                    ci_low_val = float(ci_low)
+                    if cwin_val < 0.95 or ci_low_val <= 0.0:
+                        return False, (
+                            f"Approval blocked: require_winner is enabled, but variation is not a decisive winner "
+                            f"(chance to win {cwin_val * 100:.1f}% < 95.0% or CI low {ci_low_val:.3f} <= 0.000)."
+                        )
+
             # 4. General Guardrail Breach
             if getattr(ev, "is_breached", False):
                 return False, f"Approval blocked: Guardrail '{ev.name}' is breached: {getattr(ev, 'reason', '')}"
@@ -705,6 +742,20 @@ class GuardianEngine:
                         if g.metric_source == "flagsmith_experiment":
                             if cw > g.threshold:
                                 return False, f"Approval blocked: Bayesian chance-to-be-worse ({cw:.1f}%) exceeds configured limit ({g.threshold:.1f}%)."
+                require_winner = getattr(rc, "require_winner", False) or any(
+                    getattr(g, "require_winner", False) for g in rc.guardrails
+                )
+                if require_winner:
+                    cwin = saved_exp.get("chance_to_win")
+                    ci_low = saved_exp.get("ci_low")
+                    if cwin is not None and ci_low is not None:
+                        cwin_val = float(cwin)
+                        ci_low_val = float(ci_low)
+                        if cwin_val < 0.95 or ci_low_val <= 0.0:
+                            return False, (
+                                f"Approval blocked: require_winner is enabled, but variation is not a decisive winner "
+                                f"(chance to win {cwin_val * 100:.1f}% < 95.0% or CI low {ci_low_val:.3f} <= 0.000)."
+                            )
 
         return True, None
 
@@ -849,7 +900,7 @@ class GuardianEngine:
     # -------------------------------------------------------------------------
     # Status Reporting
     # -------------------------------------------------------------------------
-    def get_status(self, flag_name: Optional[str] = None) -> Dict[str, Any]:
+    def get_status(self, flag_name: Optional[str] = None, full: bool = False) -> Dict[str, Any]:
         now = time.time()
         rollouts_report: Dict[str, Any] = {}
 
@@ -986,7 +1037,10 @@ class GuardianEngine:
         target_flag = flag_name or self.config.flag_name
         primary_report = rollouts_report.get(target_flag, rollouts_report[self.config.flag_name])
 
-        timeline_entries = self.storage.get_audit_entries(order="ASC", limit=None)
+        if full:
+            timeline_entries = self.storage.get_audit_entries(order="ASC", limit=None)
+        else:
+            timeline_entries = list(reversed(self.storage.get_audit_entries(order="DESC", limit=20)))
 
         # Build combined response
         return {

@@ -54,6 +54,9 @@ class GuardianStorage:
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
+                    first_timestamp TEXT,
+                    last_timestamp TEXT,
+                    count INTEGER NOT NULL DEFAULT 1,
                     flag_name TEXT NOT NULL,
                     from_state TEXT NOT NULL,
                     to_state TEXT NOT NULL,
@@ -62,6 +65,18 @@ class GuardianStorage:
                     numbers_json TEXT NOT NULL
                 );
             """)
+            # Schema migration for existing audit_log tables
+            try:
+                cur = self._conn.execute("PRAGMA table_info(audit_log)")
+                cols = [row[1] for row in cur.fetchall()]
+                if "first_timestamp" not in cols:
+                    self._conn.execute("ALTER TABLE audit_log ADD COLUMN first_timestamp TEXT;")
+                if "last_timestamp" not in cols:
+                    self._conn.execute("ALTER TABLE audit_log ADD COLUMN last_timestamp TEXT;")
+                if "count" not in cols:
+                    self._conn.execute("ALTER TABLE audit_log ADD COLUMN count INTEGER NOT NULL DEFAULT 1;")
+            except Exception:
+                pass
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_flag ON audit_log(flag_name);")
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS idempotency (
@@ -181,7 +196,7 @@ class GuardianStorage:
             return results
 
     # -------------------------------------------------------------------------
-    # Audit Decisions
+    # Audit Decisions & Pruning
     # -------------------------------------------------------------------------
     def record_audit(
         self,
@@ -195,15 +210,49 @@ class GuardianStorage:
     ) -> int:
         numbers_json = json.dumps(numbers, default=str)
         with self._lock, self._conn:
+            # Collapse consecutive identical HOLD decisions
+            if decision == "HOLD":
+                last_cur = self._conn.execute(
+                    "SELECT id, decision, from_state, to_state, reason, count, first_timestamp FROM audit_log WHERE flag_name = ? ORDER BY id DESC LIMIT 1",
+                    (flag_name,),
+                )
+                last_row = last_cur.fetchone()
+                if (
+                    last_row
+                    and last_row["decision"] == "HOLD"
+                    and last_row["from_state"] == from_state
+                    and last_row["to_state"] == to_state
+                ):
+                    current_count = int(last_row["count"] or 1) + 1
+                    first_ts = last_row["first_timestamp"] or timestamp
+                    self._conn.execute(
+                        "UPDATE audit_log SET count = ?, last_timestamp = ?, reason = ?, numbers_json = ? WHERE id = ?",
+                        (current_count, timestamp, reason, numbers_json, last_row["id"]),
+                    )
+                    return last_row["id"]
+
             cur = self._conn.execute(
                 """
                 INSERT INTO audit_log (
-                    timestamp, flag_name, from_state, to_state, decision, reason, numbers_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    timestamp, first_timestamp, last_timestamp, count, flag_name, from_state, to_state, decision, reason, numbers_json
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                 """,
-                (timestamp, flag_name, from_state, to_state, decision, reason, numbers_json),
+                (timestamp, timestamp, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json),
             )
-            return cur.lastrowid
+            row_id = cur.lastrowid
+            # Keep SQLite from growing without bound
+            self._prune_audit_log_locked(max_entries=1000)
+            return row_id
+
+    def prune_audit_log(self, max_entries: int = 1000) -> None:
+        with self._lock, self._conn:
+            self._prune_audit_log_locked(max_entries=max_entries)
+
+    def _prune_audit_log_locked(self, max_entries: int = 1000) -> None:
+        self._conn.execute(
+            "DELETE FROM audit_log WHERE id NOT IN (SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)",
+            (max_entries,),
+        )
 
     def get_audit_entries(
         self,
@@ -242,9 +291,15 @@ class GuardianStorage:
                     numbers = json.loads(r["numbers_json"])
                 except Exception:
                     pass
+                first_ts = r["first_timestamp"] if ("first_timestamp" in r.keys() and r["first_timestamp"]) else r["timestamp"]
+                last_ts = r["last_timestamp"] if ("last_timestamp" in r.keys() and r["last_timestamp"]) else r["timestamp"]
+                count_val = r["count"] if ("count" in r.keys() and r["count"]) else 1
                 entries.append({
                     "id": r["id"],
                     "timestamp": r["timestamp"],
+                    "first_timestamp": first_ts,
+                    "last_timestamp": last_ts,
+                    "count": count_val,
                     "flag_name": r["flag_name"],
                     "from_state": r["from_state"],
                     "to_state": r["to_state"],

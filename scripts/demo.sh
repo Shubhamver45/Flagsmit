@@ -238,6 +238,13 @@ try:
         cw = exp.get('chance_to_be_worse')
         cw_str = f\"{cw:.1f}%\" if isinstance(cw, (int, float)) else \"n/a (collecting data)\"
         print(f\"  • Chance to be Worse: {cw_str}\")
+        cwin = exp.get('chance_to_win')
+        if cwin is not None:
+            cwin_str = f\"{cwin*100:.1f}%\" if cwin <= 1.0 else f\"{cwin:.1f}%\"
+            ci_low = exp.get('ci_low')
+            ci_high = exp.get('ci_high')
+            ci_str = f\"[{ci_low:.3f}, {ci_high:.3f}]\" if (ci_low is not None and ci_high is not None) else \"n/a\"
+            print(f\"  • Chance to Win     : {cwin_str} (95% CI: {ci_str})\")
         srm_p = exp.get('srm_p_value')
         if exp.get('srm_warning'):
             srm_str = f\"WARNING (Corrupt, p-value: {srm_p:.6f})\" if srm_p is not None else \"WARNING (Corrupt)\"
@@ -399,7 +406,8 @@ fi
 
 echo ""
 echo "--- Phase 2 (Scenario 2): Approval Gate Blocks on Underperforming (WORSE) Variation ---"
-echo "Setting experiment mode to 'worse' (control converts at 75%, variation converts at only 5%)..."
+echo "Setting experiment mode to 'worse' (checkout event rate per user visit: control ~75%, variation ~5%)..."
+echo "ℹ Metric aggregation='count': tracks total completed checkouts per identity (sum can exceed n across repeated visits)."
 curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=worse" | python3 -m json.tool
 echo "Generating traffic for worse variation to calculate statistical underperformance..."
 PYTHONPATH=. python3 demo/simulator.py --prefix worse_user --requests 250 --identities 200 > /dev/null
@@ -424,10 +432,11 @@ fi
 
 echo ""
 echo "--- Phase 3: Happy-Path Scenario (WINNER Variation) & Human Operator Promotion ---"
-echo "Setting experiment mode to 'winner' (variation converts at 98%, control converts at 20%)..."
+echo "Setting experiment mode to 'winner' (checkout event rate per user visit: variation ~98%, control ~10%)..."
+echo "ℹ Demonstrating decisive winner under require_winner: true (chance to win >= 95%, CI interval above zero)."
 curl -s -X POST "http://localhost:5001/set-experiment-mode?mode=winner" | python3 -m json.tool
 echo "Generating traffic for winner variation demonstrating decisive positive lift..."
-PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 400 --identities 300 > /dev/null
+PYTHONPATH=. python3 demo/simulator.py --prefix winner_user --requests 450 --identities 300 > /dev/null
 sleep 2
 refresh_flagsmith_experiment
 
@@ -440,7 +449,7 @@ echo "==> Guardian Status Check (Gate Evaluation for Winner Variation):"
 print_guardian_experiment_status
 
 echo "Executing operator promotion approval:"
-if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: winner variation, no SRM"; then
+if python3 -m guardian.cli approve --by "operator" --reason "Pre-promotion health check verified: decisive winner (chance to win >= 95%, CI interval above zero), no SRM"; then
     wait_for_state "PROMOTED" 10
     echo "✔ Feature flag successfully promoted to 100%!"
 else
@@ -568,15 +577,39 @@ echo ""
 echo "Audit Decision Trail:"
 python3 -c "
 import urllib.request, json
-data = json.loads(urllib.request.urlopen('http://localhost:8080/status').read())
+data = json.loads(urllib.request.urlopen('http://localhost:8080/status?full=1').read())
 for e in data.get('timeline', []):
     ts = e.get('timestamp', '')
+    first_ts = e.get('first_timestamp') or ts
+    last_ts = e.get('last_timestamp') or ts
+    count = e.get('count', 1)
     dec = e.get('decision', 'INFO')
     from_st = e.get('from_state', '?')
     to_st = e.get('to_state', '?')
-    pct = e.get('numbers', {}).get('target_percentage', e.get('numbers', {}).get('current_percentage', ''))
-    pct_str = f' ({pct}%)' if pct != '' else ''
+    
+    nums = e.get('numbers', {})
+    disp_pct = nums.get('display_percentage')
+    if disp_pct:
+        pct_str = f' ({disp_pct})'
+    elif to_st == 'AWAITING_APPROVAL':
+        curr_p = int(nums.get('current_percentage', 25))
+        next_p = int(nums.get('target_percentage', 100))
+        pct_str = f' ({curr_p}% (next: {next_p}%))'
+    else:
+        pct = nums.get('target_percentage', nums.get('current_percentage', ''))
+        pct_str = f' ({pct}%)' if pct != '' else ''
+
+    if count > 1 and first_ts != last_ts:
+        ts_display = f\"{first_ts} .. {last_ts}\"
+        dec_display = f\"{dec} (x{count})\"
+    elif count > 1:
+        ts_display = ts
+        dec_display = f\"{dec} (x{count})\"
+    else:
+        ts_display = ts
+        dec_display = dec
+
     reason = e.get('reason', '')
-    print(f\"  [{ts}] [{dec}] {from_st} ➔ {to_st}{pct_str} | {reason}\")
+    print(f\"  [{ts_display}] [{dec_display}] {from_st} ➔ {to_st}{pct_str} | {reason}\")
 "
 echo "========================================================================"

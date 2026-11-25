@@ -178,9 +178,12 @@ class RolloutStateMachine:
                 reason = f"Human approval granted. Promoted to final stage ({final_pct}%)."
                 return self.current_state, RolloutDecision.PROMOTED, reason, numbers
             else:
+                curr_p = int(self.current_percentage) if self.current_percentage.is_integer() else self.current_percentage
+                next_p = int(self.config.stages[-1])
                 numbers = {
                     "current_percentage": self.current_percentage,
                     "target_percentage": self.config.stages[-1],
+                    "display_percentage": f"{curr_p}% (next: {next_p}%)",
                 }
                 reason = "All guardrails healthy. Awaiting explicit human approval for final promotion."
                 return self.current_state, RolloutDecision.HOLD, reason, numbers
@@ -209,6 +212,10 @@ class RolloutStateMachine:
         # If next stage is the final stage and approval is required
         if is_final_stage and self.config.require_approval_before_final and not self.is_approved:
             self.current_state = RolloutState.AWAITING_APPROVAL.value
+            curr_p = int(self.current_percentage) if self.current_percentage.is_integer() else self.current_percentage
+            next_p = int(self.config.stages[next_stage_index])
+            numbers["display_percentage"] = f"{curr_p}% (next: {next_p}%)"
+            numbers["target_percentage"] = self.config.stages[next_stage_index]
             reason = (
                 f"Soak time completed for {RolloutState.stage_name(self.current_stage_index)} ({self.current_percentage}%). "
                 f"Ready for final stage ({self.config.stages[next_stage_index]}%), but requires human approval."

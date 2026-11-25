@@ -23,6 +23,9 @@ class AuditEntry:
     decision: str  # ADVANCE, HOLD, ROLLBACK, AWAIT_APPROVAL, PROMOTED
     reason: str
     numbers: Dict[str, Any]
+    first_timestamp: Optional[str] = None
+    last_timestamp: Optional[str] = None
+    count: int = 1
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -41,9 +44,12 @@ class AuditLogger:
         # If storage is provided, pre-load recent historical entries
         if self.storage:
             recent = self.storage.get_audit_entries(limit=100)
-            for r in reversed(recent):
+            for r in recent:
                 self._entries.append(AuditEntry(
                     timestamp=r["timestamp"],
+                    first_timestamp=r.get("first_timestamp") or r["timestamp"],
+                    last_timestamp=r.get("last_timestamp") or r["timestamp"],
+                    count=r.get("count", 1),
                     flag_name=r["flag_name"],
                     from_state=r["from_state"],
                     to_state=r["to_state"],
@@ -65,8 +71,46 @@ class AuditLogger:
         numbers: Dict[str, Any],
     ) -> AuditEntry:
         timestamp = datetime.now(timezone.utc).isoformat()
+
+        # Collapse consecutive identical HOLD decisions in local memory
+        if decision == "HOLD" and self._entries:
+            last = self._entries[-1]
+            if (
+                last.decision == "HOLD"
+                and last.flag_name == flag_name
+                and last.from_state == from_state
+                and last.to_state == to_state
+            ):
+                updated_entry = AuditEntry(
+                    timestamp=timestamp,
+                    first_timestamp=last.first_timestamp or last.timestamp,
+                    last_timestamp=timestamp,
+                    count=last.count + 1,
+                    flag_name=flag_name,
+                    from_state=from_state,
+                    to_state=to_state,
+                    decision=decision,
+                    reason=reason,
+                    numbers=numbers,
+                )
+                self._entries[-1] = updated_entry
+                if self.storage:
+                    self.storage.record_audit(
+                        timestamp=timestamp,
+                        flag_name=flag_name,
+                        from_state=from_state,
+                        to_state=to_state,
+                        decision=decision,
+                        reason=reason,
+                        numbers=numbers,
+                    )
+                return updated_entry
+
         entry = AuditEntry(
             timestamp=timestamp,
+            first_timestamp=timestamp,
+            last_timestamp=timestamp,
+            count=1,
             flag_name=flag_name,
             from_state=from_state,
             to_state=to_state,
