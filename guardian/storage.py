@@ -25,14 +25,23 @@ class GuardianStorage:
             db_path = os.environ.get("GUARDIAN_DB_PATH", DEFAULT_DB_PATH)
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-            timeout=10.0,
-        )
-        self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        self._local = threading.local()
         self._init_db()
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                timeout=30.0,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=10000;")
+            self._local.conn = conn
+        return self._local.conn
 
     def _init_db(self) -> None:
         with self._lock, self._conn:
@@ -473,7 +482,9 @@ class GuardianStorage:
 
     def close(self) -> None:
         with self._lock:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
+            if hasattr(self._local, "conn") and self._local.conn is not None:
+                try:
+                    self._local.conn.close()
+                except Exception:
+                    pass
+                self._local.conn = None
