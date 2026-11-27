@@ -308,6 +308,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       <div class="logo">
         <h1>Guardian 🛡️</h1>
         <span id="flag-badge">Flagsmith Flag: new_checkout</span>
+        <a id="open-flagsmith-link" href="#" target="_blank" rel="noopener noreferrer" style="display: none; font-size: 12px; color: #818cf8; text-decoration: none; border: 1px solid rgba(99,102,241,0.35); padding: 3px 10px; border-radius: 9999px;">Open in Flagsmith ↗</a>
       </div>
       <div style="display: flex; align-items: center; gap: 12px;">
         <div style="display: flex; align-items: center; gap: 6px; background: var(--card-bg); border: 1px solid var(--card-border); padding: 4px 10px; border-radius: 9999px;">
@@ -527,6 +528,16 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       document.getElementById('state-display').innerText = data.state;
       document.getElementById('pct-display').innerText = data.percentage + '% Allocation';
       document.getElementById('flag-badge').innerText = 'Flagsmith Flag: ' + data.flag_name;
+      const fsLinkEl = document.getElementById('open-flagsmith-link');
+      if (fsLinkEl) {
+        const fsUrl = typeof data.flagsmith_ui_url === 'string' ? data.flagsmith_ui_url.trim() : '';
+        if (fsUrl.startsWith('https://') || fsUrl.startsWith('http://')) {
+          fsLinkEl.setAttribute('href', esc(fsUrl));
+          fsLinkEl.style.display = 'inline-block';
+        } else {
+          fsLinkEl.style.display = 'none';
+        }
+      }
 
       // Drift Warning Banner
       const drift = data.drift;

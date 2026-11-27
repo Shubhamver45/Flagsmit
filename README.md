@@ -14,6 +14,12 @@
 
 Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Teams running self-hosted feature flags often have to build custom glue code for automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates. **Guardian** is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.70–7.30s upon threshold breaches, and detecting out-of-band drift in 5.96–8.89s (measured on a laptop, simulated traffic).
 
+> [!IMPORTANT]
+> **Requirements and limitations**:
+> * **Prometheus required for real-time guardrails**: Operational rollbacks (error rate, latency) query Prometheus PromQL.
+> * **v0.1 beta**: Designed as a single-instance SQLite sidecar for self-hosted Flagsmith; see [Limitations](#10-limitations).
+> * **Simulated traffic in the demo**: The included checkout demo app uses simulated client identities so statistical significance and breaches complete in minutes.
+
 ---
 
 ## 2. What Guardian Does
@@ -23,6 +29,12 @@ Modern engineering teams practicing continuous delivery rely on feature flags to
 * **Experimentation-Driven Human Gating**: Integrates directly with Flagsmith Experimentation to gate final 100% promotion behind Bayesian statistical evidence (chance-to-be-worse, positive credible intervals) and chi-squared Sample Ratio Mismatch (SRM) checks.
 * **Real-Time Drift Detection & Flagsmith Discovery**: Listens for Flagsmith environment webhooks with constant-time HMAC-SHA256 signature verification, runs background polling to catch unauthorized manual flag changes in 5.96–8.89s (measured on a laptop, simulated traffic), and exposes `/flagsmith/projects`, `/flagsmith/environments`, and `/flagsmith/features` discovery APIs.
 * **Crash-Resilient State Persistence**: Backed by a transactional SQLite engine that survives restarts mid-rollout, reconciles stored state against Flagsmith on boot, and maintains an immutable audit trail of every promotion, pause, drift event, incident, and rollback.
+
+### How is this different?
+| Approach | What Guardian Adds | What Guardian Does Not Do |
+| :--- | :--- | :--- |
+| **vs. Argo Rollouts / Flagger** | **Flagsmith-native**: shifts traffic at the **feature flag** layer (works on any app/VM/container without a service mesh or Ingress controller), gates promotions on **Flagsmith Experimentation + SRM**, and detects out-of-band flag **drift**. | Does **not** perform Kubernetes pod/service-mesh traffic shifting or manage container Deployments. |
+| **vs. Manual Flagsmith Use** | Automates staged canary progression, continuous Prometheus guardrails with fast rollback to 0%, Bayesian/SRM approval gating, and webhook drift alerts. | Does **not** replace Flagsmith itself; it sits beside Flagsmith as a safety controller. |
 
 ---
 

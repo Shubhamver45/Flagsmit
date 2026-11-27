@@ -214,3 +214,36 @@ def test_ineligible_approval_banner_and_guardrail_units(tmp_path):
     assert "esc(g.name)" in html
     assert "esc(g.reason" in html
     storage.close()
+
+
+def test_open_in_flagsmith_link_safe_and_no_secrets(tmp_path, monkeypatch):
+    storage = GuardianStorage(db_path=tmp_path / "fs_link.db")
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+    mock_client.api_url = "http://localhost:8000/api/v1"
+    mock_client._project_id = 7
+    monkeypatch.setenv("FLAGSMITH_ADMIN_API_KEY", "secret-admin-key-xyz")
+    monkeypatch.setenv("FLAGSMITH_ENVIRONMENT_KEY", "env-client-key-xyz")
+
+    cfg = RolloutConfig(flag_name="new_checkout", stages=[1.0, 100.0], soak_time_seconds=0)
+    engine = GuardianEngine(
+        config=cfg,
+        flagsmith_client=mock_client,
+        metric_provider=lambda: {},
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+    app = create_app(engine=engine, api_token="tok")
+    client = TestClient(app)
+
+    status_data = client.get("/status").json()
+    ui_url = status_data.get("flagsmith_ui_url")
+    assert ui_url == "http://localhost:8000/project/7/features"
+    assert "secret-admin-key-xyz" not in ui_url
+    assert "env-client-key-xyz" not in ui_url
+
+    html = client.get("/").text
+    assert 'id="open-flagsmith-link"' in html
+    assert 'rel="noopener noreferrer"' in html
+    assert "esc(fsUrl)" in html
+    storage.close()
