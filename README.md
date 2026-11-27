@@ -54,14 +54,19 @@ Guardian relies directly on Flagsmith's core architecture across all critical pa
   *(Note: `./scripts/demo.sh` automatically detects if dependencies are missing and bootstraps a local `.venv` environment).*
 
 ### Quickstart Execution
+**Fastest path (Docker only — zero Python setup):**
+```bash
+git clone https://github.com/Shubhamver45/flagsmith-guardian.git
+cd flagsmith-guardian
+docker compose -f compose.demo.yml up
+```
+This starts self-hosted Flagsmith (`http://localhost:8000`), Prometheus (`http://localhost:9090`), the sample checkout app + traffic simulator, a one-shot Flagsmith provisioner, and Guardian (`http://localhost:8080`) from `ghcr.io/shubhamver45/flagsmith-guardian:latest`.
+
+**Full scripted walkthrough (Docker + Python 3.11/3.12):**
 Run the full demo locally with `./scripts/demo.sh` (Docker + Python 3.11/3.12). A hosted demo is planned.
 
 ```bash
-# Clone repository and enter directory
-git clone https://github.com/shubhamver45/flagsmith-guardian.git
-cd flagsmith-guardian
-
-# Run the automated end-to-end demo orchestrator
+# Run the automated end-to-end demo orchestrator (drift -> experiment gate -> rollback -> SRM)
 ./scripts/demo.sh
 
 # Or pass --serve to run the full demo and keep the dashboard running at http://localhost:8080
