@@ -167,3 +167,107 @@ def test_secret_redacting_logger_never_leaks_secrets(monkeypatch, test_engine):
     assert webhook_secret not in captured
     assert admin_key not in captured
     assert "[REDACTED]" in captured
+
+
+def test_production_status_sanitizes_prometheus_error_for_unauthenticated(tmp_path, monkeypatch, caplog):
+    """In GUARDIAN_ENV=production, unauthenticated /status must not leak hostnames, ports, or PromQL queries."""
+    import logging
+    from unittest.mock import MagicMock
+    from fastapi.testclient import TestClient
+    import requests as _requests
+
+    from guardian.api import create_app
+    from guardian.config import RolloutConfig, Guardrail
+    from guardian.engine import GuardianEngine
+    from guardian.metrics.prometheus import PrometheusMetricSource
+    from guardian.metrics.registry import CompositeMetricProvider
+    from guardian.storage import GuardianStorage
+
+    monkeypatch.setenv("GUARDIAN_ENV", "production")
+    monkeypatch.setenv("GUARDIAN_API_TOKEN", "prod-secret-token")
+
+    bad_session = MagicMock()
+    bad_session.get.side_effect = _requests.exceptions.ConnectionError(
+        "HTTPConnectionPool(host='prom-internal.corp', port=9090): Max retries exceeded with url: /api/v1/query?query=rate(http_errors_total[5m])"
+    )
+    prom = PrometheusMetricSource("http://prom-internal.corp:9090", session=bad_session)
+    provider = CompositeMetricProvider()
+    provider.register_source("prometheus", prom)
+
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1.0, 25.0, 100.0],
+        soak_time_seconds=0,
+        require_approval_before_final=True,
+        guardrails=[
+            Guardrail(
+                name="new_flow_error_rate",
+                metric_source="prometheus",
+                comparison=">",
+                threshold=5.0,
+                query="rate(http_errors_total[5m])",
+            )
+        ],
+    )
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+    storage = GuardianStorage(db_path=tmp_path / "prod_status.db")
+    engine = GuardianEngine(
+        config=cfg,
+        flagsmith_client=mock_client,
+        metric_provider=provider,
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        engine.tick()
+    assert "prom-internal.corp" in caplog.text  # full error kept in server log
+
+    app = create_app(engine=engine, api_token="prod-secret-token")
+    client = TestClient(app)
+
+    # Unauthenticated /status must NOT contain hostname, port, or query string
+    public_resp = client.get("/status")
+    assert public_resp.status_code == 200
+    public_text = public_resp.text
+    assert "prom-internal.corp" not in public_text
+    assert "9090" not in public_text
+    assert "http_errors_total" not in public_text
+    assert "metrics source unreachable" in public_text
+
+    # Authenticated /status retains full diagnostic detail
+    auth_resp = client.get("/status", headers={"Authorization": "Bearer prod-secret-token"})
+    assert auth_resp.status_code == 200
+    assert "prom-internal.corp" in auth_resp.text
+    storage.close()
+
+
+def test_production_unsigned_webhook_post_rejected(tmp_path, monkeypatch):
+    """Unsigned POST /webhooks/flagsmith must be rejected (never 200) in production mode."""
+    from unittest.mock import MagicMock
+    from fastapi.testclient import TestClient
+
+    from guardian.api import create_app
+    from guardian.config import RolloutConfig
+    from guardian.engine import GuardianEngine
+    from guardian.storage import GuardianStorage
+
+    monkeypatch.setenv("GUARDIAN_ENV", "production")
+    monkeypatch.setenv("FLAGSMITH_WEBHOOK_SECRET", "prod-webhook-secret")
+
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+    storage = GuardianStorage(db_path=tmp_path / "prod_wh.db")
+    engine = GuardianEngine(
+        config=RolloutConfig(flag_name="new_checkout", stages=[1, 100], soak_time_seconds=0),
+        flagsmith_client=mock_client,
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+    app = create_app(engine=engine, api_token="prod-tok")
+    client = TestClient(app)
+
+    resp = client.post("/webhooks/flagsmith", json={"event_type": "FLAG_UPDATED", "data": {}})
+    assert resp.status_code == 401
+    storage.close()

@@ -7,6 +7,7 @@ and strict production environment mode enforcement.
 """
 
 from __future__ import annotations
+import copy
 import hashlib
 import hmac
 import json
@@ -269,19 +270,98 @@ def create_app(
 
         return engine.handle_flagsmith_webhook(payload)
 
+    def _is_request_authenticated(request: Request) -> bool:
+        expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
+        if not expected_token:
+            return False
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            bearer_val = auth_header[7:].strip()
+            if bearer_val and secrets.compare_digest(bearer_val, expected_token):
+                return True
+        header_token = request.headers.get("X-API-Token") or request.headers.get("X-Guardian-Token")
+        if header_token and secrets.compare_digest(header_token, expected_token):
+            return True
+        return False
+
+    def _sanitize_rollout_public(rd: Dict[str, Any]) -> Dict[str, Any]:
+        errored_names: List[str] = []
+        for g in rd.get("guardrails", []):
+            details = g.get("details")
+            if isinstance(details, dict) and "query" in details:
+                details.pop("query", None)
+            reason_lower = str(g.get("reason") or "").lower()
+            if g.get("status") == "ERROR" or "prometheus error:" in reason_lower or "http://" in reason_lower or "https://" in reason_lower:
+                g_name = g.get("name", "unknown")
+                errored_names.append(g_name)
+                g["reason"] = f"Guardrail '{g_name}' could not be evaluated (metrics source unreachable)"
+                g["details"] = {}
+
+        def _should_redact_block(text: Optional[str]) -> bool:
+            if not text:
+                return False
+            low = text.lower()
+            return bool(errored_names) and (
+                "prometheus" in low or "http://" in low or "https://" in low or "error" in low or "failed" in low or "unreachable" in low
+            ) or ("http://" in low or "https://" in low or "prometheus error:" in low)
+
+        if _should_redact_block(rd.get("approval_block_reason")):
+            g_name = errored_names[0] if errored_names else "unknown"
+            rd["approval_block_reason"] = (
+                f"Approval blocked: guardrail '{g_name}' could not be evaluated (metrics source unreachable)"
+            )
+
+        exp = rd.get("experiment")
+        if isinstance(exp, dict) and _should_redact_block(exp.get("block_reason")):
+            g_name = errored_names[0] if errored_names else "unknown"
+            exp["block_reason"] = (
+                f"Approval blocked: guardrail '{g_name}' could not be evaluated (metrics source unreachable)"
+            )
+
+        for entry in rd.get("timeline", []):
+            r_str = str(entry.get("reason") or "").lower()
+            if "prometheus error:" in r_str or "http://" in r_str or "https://" in r_str:
+                entry["reason"] = "Guardrail evaluation error (metrics source unreachable)"
+            nums = entry.get("numbers")
+            if isinstance(nums, dict):
+                nums.pop("query", None)
+                if "error" in nums:
+                    nums["error"] = "metrics source unreachable"
+        return rd
+
+    def _sanitize_public_status(data: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = copy.deepcopy(data)
+        _sanitize_rollout_public(sanitized)
+        rollouts = sanitized.get("rollouts")
+        if isinstance(rollouts, dict):
+            for r_data in rollouts.values():
+                if isinstance(r_data, dict):
+                    _sanitize_rollout_public(r_data)
+        return sanitized
+
     @app.get("/status")
     def get_status(
+        request: Request,
         flag_name: Optional[str] = None,
         full: bool = Query(False, description="Return full audit trail if true, last 20 by default"),
     ) -> Dict[str, Any]:
-        return engine.get_status(flag_name=flag_name, full=full)
+        data = engine.get_status(flag_name=flag_name, full=full)
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+        if is_prod and not _is_request_authenticated(request):
+            return _sanitize_public_status(data)
+        return data
 
     @app.get("/rollouts/{flag_name}/status")
     def get_rollout_status(
+        request: Request,
         flag_name: str,
         full: bool = Query(False, description="Return full audit trail if true, last 20 by default"),
     ) -> Dict[str, Any]:
-        return engine.get_status(flag_name=flag_name, full=full)
+        data = engine.get_status(flag_name=flag_name, full=full)
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+        if is_prod and not _is_request_authenticated(request):
+            return _sanitize_public_status(data)
+        return data
 
     @app.post(
         "/approve",

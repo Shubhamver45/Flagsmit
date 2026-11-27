@@ -1,7 +1,6 @@
 # Guardian 🛡️
 > **Automated Guarded Rollouts and Blast-Radius Containment for Self-Hosted Flagsmith**  
-> *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*  
-> **Live Dashboard:** https://flagsmith-guardian.onrender.com *(read-only public view; write actions require `GUARDIAN_API_TOKEN`)*
+> *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*
 
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
@@ -38,7 +37,7 @@ Guardian relies directly on Flagsmith's core architecture across all critical pa
 | **Multivariate Rollouts** | `guardian/engine.py:GuardianEngine.reconcile_on_startup`, `guardian/engine.py:GuardianEngine.reconcile_runtime`, `guardian/flagsmith_client.py:FlagsmithAdminClient.set_percentage_rollout` | **Yes** | Configures and drives percentage splits across control and variation options on the target environment feature state without locking segment overrides. |
 | **Experimentation Results** | `guardian/metrics/flagsmith_exp.py:FlagsmithExperimentMetricSource.evaluate`, `guardian/metrics/flagsmith_exp.py:FlagsmithExperimentMetricSource._fetch_results` | **Yes** | Queries Flagsmith's Bayesian experimentation engine (`/api/v1/environments/{key}/experiments/{id}/results/`) for chance-to-be-worse, chance-to-win, and credible intervals. |
 | **Sample Ratio Mismatch (SRM)** | `guardian/metrics/flagsmith_exp.py:FlagsmithExperimentMetricSource.evaluate`, `guardian/engine.py:GuardianEngine.check_approval_eligibility` | **Yes** | Evaluates Flagsmith's chi-squared SRM test (`srm_p_value < 0.001`). If traffic distribution is corrupted, Guardian flags a warning and blocks human promotion approval. |
-| **Environment Webhooks** | `guardian/api.py:create_app`, `scripts/setup_flagsmith.py:setup_via_admin_api` | **Yes** | Registers environment webhooks and ingests `FLAG_UPDATED` payloads verified with `X-Flagsmith-Signature` HMAC-SHA256 to detect out-of-band drift within seconds. |
+| **Environment Webhooks** | `guardian/api.py:create_app`, `scripts/setup_flagsmith.py:setup_via_admin_api` | **Yes** | Registers environment webhooks to `POST /webhooks/flagsmith` and ingests `FLAG_UPDATED` payloads verified with `X-Flagsmith-Signature` HMAC-SHA256 to detect out-of-band drift within seconds. |
 
 ---
 
@@ -55,7 +54,7 @@ Guardian relies directly on Flagsmith's core architecture across all critical pa
   *(Note: `./scripts/demo.sh` automatically detects if dependencies are missing and bootstraps a local `.venv` environment).*
 
 ### Quickstart Execution
-Experience the entire end-to-end workflow with one command:
+Run the full demo locally with `./scripts/demo.sh` (Docker + Python 3.11/3.12). A hosted demo is planned.
 
 ```bash
 # Clone repository and enter directory
