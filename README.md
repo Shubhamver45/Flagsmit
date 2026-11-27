@@ -1,6 +1,7 @@
 # Guardian 🛡️
 > **Automated Guarded Rollouts and Blast-Radius Containment for Self-Hosted Flagsmith**  
-> *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*
+> *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*  
+> **Live Dashboard:** https://flagsmith-guardian.onrender.com *(read-only public view; write actions require `GUARDIAN_API_TOKEN`)*
 
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
