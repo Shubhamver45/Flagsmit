@@ -1,0 +1,110 @@
+"""Tests for new SwitchGuard API endpoints: /pause, /resume, /incidents, /health, /flagsmith/*, and no token injection."""
+
+from unittest.mock import MagicMock
+from fastapi.testclient import TestClient
+
+from guardian.api import create_app
+from guardian.config import RolloutConfig, Guardrail
+from guardian.engine import GuardianEngine
+from guardian.storage import GuardianStorage
+
+
+def _build_test_client(tmp_path, api_token="test-secret-token"):
+    storage = GuardianStorage(db_path=tmp_path / "api_new.db")
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+    mock_client.list_projects.return_value = [{"id": 1, "name": "Demo Project"}]
+    mock_client.list_environments.return_value = [{"id": 1, "name": "Production", "api_key": "env-key"}]
+    mock_client.list_features.return_value = [{"id": 10, "name": "new_checkout"}]
+
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1.0, 5.0, 100.0],
+        soak_time_seconds=30,
+        guardrails=[
+            Guardrail(
+                name="error_rate",
+                metric_source="prometheus",
+                query="rate(errors[1m])",
+                threshold=5.0,
+                comparison=">",
+            )
+        ],
+    )
+    engine = GuardianEngine(
+        config=cfg,
+        flagsmith_client=mock_client,
+        metric_provider=lambda: {"error_rate": 0.1},
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+    app = create_app(engine=engine, api_token=api_token)
+    return TestClient(app), engine, storage
+
+
+def test_index_does_not_inject_api_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUARDIAN_API_TOKEN", "super-secret-live-token-xyz")
+    client, _, storage = _build_test_client(tmp_path, api_token="super-secret-live-token-xyz")
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "super-secret-live-token-xyz" not in resp.text
+    assert "SwitchGuard" in resp.text
+    storage.close()
+
+
+def test_health_readiness_probe(tmp_path):
+    client, _, storage = _build_test_client(tmp_path)
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "healthy", "service": "switchguard"}
+
+    ready_resp = client.get("/ready")
+    assert ready_resp.status_code == 200
+    data = ready_resp.json()
+    assert data["service"] == "switchguard"
+    assert data["db"] == "ok"
+    assert "flagsmith" in data
+    storage.close()
+
+
+def test_pause_resume_and_incidents_endpoints(tmp_path):
+    token = "test-secret-token"
+    headers = {"Authorization": f"Bearer {token}"}
+    client, engine, storage = _build_test_client(tmp_path, api_token=token)
+
+    # Unauthenticated protected endpoints must fail 401
+    assert client.post("/pause").status_code == 401
+    assert client.get("/incidents").status_code == 401
+    assert client.get("/flagsmith/projects").status_code == 401
+    assert client.get("/flagsmith/environments").status_code == 401
+    assert client.get("/flagsmith/features").status_code == 401
+
+    # Start rollout via /tick
+    tick_resp = client.post("/tick", headers=headers)
+    assert tick_resp.status_code == 200
+    assert tick_resp.json()["current_state"] == "STAGE_1"
+
+    # Pause
+    pause_resp = client.post("/pause", headers=headers, json={"flag_name": "new_checkout"})
+    assert pause_resp.status_code == 200
+    assert pause_resp.json()["current_state"] == "PAUSED"
+    assert pause_resp.json()["current_percentage"] == 1.0
+
+    # Resume
+    resume_resp = client.post("/resume", headers=headers, json={"flag_name": "new_checkout"})
+    assert resume_resp.status_code == 200
+    assert resume_resp.json()["current_state"] == "STAGE_1"
+
+    # Incidents endpoint returns empty paginated list initially
+    inc_resp = client.get("/incidents", headers=headers)
+    assert inc_resp.status_code == 200
+    assert inc_resp.json()["count"] == 0
+    assert inc_resp.json()["total"] == 0
+
+    # Discovery endpoints require auth and redact api_key from environments
+    assert client.get("/flagsmith/projects", headers=headers).json()["count"] == 1
+    env_resp = client.get("/flagsmith/environments", headers=headers).json()
+    assert env_resp["count"] == 1
+    assert "api_key" not in env_resp["environments"][0]
+    assert client.get("/flagsmith/features", headers=headers).json()["count"] == 1
+    storage.close()

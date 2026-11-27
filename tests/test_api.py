@@ -31,12 +31,20 @@ def test_api_health_and_status(mock_engine):
     # Test Status Page HTML
     res_page = client.get("/")
     assert res_page.status_code == 200
-    assert "Guardian 🛡️" in res_page.text
+    assert "SwitchGuard 🛡️" in res_page.text
     assert "<!DOCTYPE html>" in res_page.text
 
     res = client.get("/health")
     assert res.status_code == 200
-    assert res.json() == {"status": "healthy", "service": "guardian"}
+    assert res.json() == {"status": "healthy", "service": "switchguard"}
+
+    ready_res = client.get("/ready")
+    assert ready_res.status_code == 200
+    ready_data = ready_res.json()
+    assert ready_data["status"] == "ready"
+    assert ready_data["service"] == "switchguard"
+    assert ready_data["db"] == "ok"
+    assert "flagsmith" in ready_data
 
     status_res = client.get("/status")
     assert status_res.status_code == 200

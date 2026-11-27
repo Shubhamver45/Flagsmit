@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 guardian = "guardian.cli:main"
+switchguard = "guardian.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -15,7 +15,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Guardian 🛡️ | Automated Guarded Rollouts</title>
+  <title>SwitchGuard 🛡️ | Autonomous Production Safety for Flagsmith</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -306,12 +306,18 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
   <div class="container">
     <header>
       <div class="logo">
-        <h1>Guardian 🛡️</h1>
+        <h1>SwitchGuard 🛡️</h1>
         <span id="flag-badge">Flagsmith Flag: new_checkout</span>
       </div>
-      <div class="refresh-badge">
-        <span class="pulse-dot"></span>
-        <span>Live Telemetry (Polling 2s)</span>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 6px; background: var(--card-bg); border: 1px solid var(--card-border); padding: 4px 10px; border-radius: 9999px;">
+          <input id="operator-token-input" type="password" placeholder="Operator Token" style="background: transparent; border: none; color: var(--text-main); font-size: 12px; width: 120px; outline: none;" />
+          <button onclick="saveOperatorToken()" style="background: rgba(99,102,241,0.2); color: #818cf8; border: none; border-radius: 9999px; padding: 2px 8px; font-size: 11px; cursor: pointer;">Set</button>
+        </div>
+        <div class="refresh-badge">
+          <span class="pulse-dot"></span>
+          <span>Live Telemetry (Polling 2s)</span>
+        </div>
       </div>
     </header>
 
@@ -373,6 +379,14 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <button id="btn-approve-action" class="btn-approve" onclick="handleApprove()" disabled>
             ✅ Approve Final Promotion
           </button>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <button id="btn-pause-action" class="btn-tick" onclick="handlePause()" style="color: #fbbf24; border-color: rgba(251, 191, 36, 0.35);">
+              ⏸️ Pause Rollout
+            </button>
+            <button id="btn-resume-action" class="btn-tick" onclick="handleResume()" style="color: #34d399; border-color: rgba(52, 211, 153, 0.35);" disabled>
+              ▶️ Resume Rollout
+            </button>
+          </div>
           <button class="btn-rollback" onclick="handleRollback()">
             🛑 Emergency Rollback to 0%
           </button>
@@ -438,6 +452,28 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       </table>
     </div>
 
+    <!-- Incidents Intelligence -->
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="card-title">
+        <span>🚨 Incident Intelligence</span>
+        <span id="incidents-count-badge" class="mono" style="font-size: 12px; color: var(--text-muted);">0 recorded</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Flag</th>
+            <th>Trigger</th>
+            <th>Action</th>
+            <th>Explanation</th>
+          </tr>
+        </thead>
+        <tbody id="incidents-body">
+          <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No production incidents recorded</td></tr>
+        </tbody>
+      </table>
+    </div>
+
     <!-- Timeline -->
     <div class="card">
       <div class="card-title">Decision Timeline & Audit Trail</div>
@@ -463,10 +499,18 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     async function fetchStatus() {
       try {
         const url = activeFlagName ? `/status?flag_name=${encodeURIComponent(activeFlagName)}` : '/status';
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const data = await res.json();
-        renderDashboard(data);
+        const [statusRes, incRes] = await Promise.all([
+          fetch(url),
+          fetch('/incidents?limit=10', { headers: getAuthHeaders() }).catch(() => null),
+        ]);
+        if (statusRes.ok) {
+          const data = await statusRes.json();
+          renderDashboard(data);
+        }
+        if (incRes && incRes.ok) {
+          const incData = await incRes.json();
+          renderIncidents(incData.incidents || []);
+        }
       } catch (err) {
         console.error('Failed to fetch status:', err);
       }
@@ -547,8 +591,18 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       if (drift && drift.detected) stateEl.style.color = '#ef4444';
       else if (data.state === 'PROMOTED') stateEl.style.color = '#34d399';
       else if (data.state === 'ROLLED_BACK') stateEl.style.color = '#f87171';
-      else if (data.state === 'AWAITING_APPROVAL') stateEl.style.color = '#fbbf24';
+      else if (data.state === 'AWAITING_APPROVAL' || data.state === 'PAUSED') stateEl.style.color = '#fbbf24';
       else stateEl.style.color = '#f9fafb';
+
+      // Pause / Resume buttons
+      const pauseBtn = document.getElementById('btn-pause-action');
+      const resumeBtn = document.getElementById('btn-resume-action');
+      if (pauseBtn && resumeBtn) {
+        const isPaused = data.state === 'PAUSED';
+        const isTerminalOrPending = ['PENDING', 'PROMOTED', 'ROLLED_BACK', 'PAUSED'].includes(data.state);
+        pauseBtn.disabled = isTerminalOrPending;
+        resumeBtn.disabled = !isPaused;
+      }
 
       // Experiment Card
       if (data.experiment) {
@@ -748,6 +802,38 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       }).join('');
     }
 
+    function renderIncidents(incidents) {
+      const tbody = document.getElementById('incidents-body');
+      const badge = document.getElementById('incidents-count-badge');
+      if (!tbody) return;
+      if (badge) badge.innerText = `${incidents.length} recorded`;
+      if (!incidents.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No production incidents recorded</td></tr>';
+        return;
+      }
+      tbody.innerHTML = incidents.map(inc => {
+        const ts = inc.triggered_at ? new Date(inc.triggered_at * 1000).toLocaleTimeString() : '--';
+        return `
+          <tr>
+            <td class="mono" style="color: var(--text-muted); white-space: nowrap;">${ts}</td>
+            <td><strong>${inc.flag_name}</strong></td>
+            <td><span class="status-pill pill-breached">${inc.trigger_type}</span></td>
+            <td><span class="status-pill pill-rollback">${inc.action_taken}</span></td>
+            <td style="font-size: 12px;">${inc.explanation}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function saveOperatorToken() {
+      const input = document.getElementById('operator-token-input');
+      if (input && input.value.trim()) {
+        localStorage.setItem('guardian_token', input.value.trim());
+        input.value = '';
+        alert('Operator token saved to localStorage.');
+      }
+    }
+
     function getAuthHeaders() {
       const headers = { 'Content-Type': 'application/json' };
       const token = localStorage.getItem('guardian_token');
@@ -755,6 +841,38 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         headers['Authorization'] = 'Bearer ' + token;
       }
       return headers;
+    }
+
+    async function handlePause() {
+      try {
+        const body = activeFlagName ? { flag_name: activeFlagName } : {};
+        const res = await fetch('/pause', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(body),
+        });
+        const json = await res.json();
+        if (!res.ok) alert('Pause Failed: ' + (json.detail || JSON.stringify(json)));
+        fetchStatus();
+      } catch (err) {
+        alert('Pause Request Error: ' + err);
+      }
+    }
+
+    async function handleResume() {
+      try {
+        const body = activeFlagName ? { flag_name: activeFlagName } : {};
+        const res = await fetch('/resume', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(body),
+        });
+        const json = await res.json();
+        if (!res.ok) alert('Resume Failed: ' + (json.detail || JSON.stringify(json)));
+        fetchStatus();
+      } catch (err) {
+        alert('Resume Request Error: ' + err);
+      }
     }
 
     async function handleApprove() {

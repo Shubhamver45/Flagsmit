@@ -72,6 +72,7 @@ def test_flagsmith_admin_client_request_construction():
                 }
             ],
         },
+        timeout=10.0,
     )
 
 
@@ -98,4 +99,7 @@ def test_flagsmith_admin_client_dynamic_id_resolution():
     # Accessing properties dynamically queries GET /environments/{key}/
     assert client.environment_id == 42
     assert client.project_id == 99
-    mock_session.get.assert_called_once_with("http://mock-flagsmith:8000/api/v1/environments/my_env_key/")
+    mock_session.get.assert_called_once_with(
+        "http://mock-flagsmith:8000/api/v1/environments/my_env_key/",
+        timeout=10.0,
+    )
