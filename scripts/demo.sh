@@ -19,7 +19,7 @@ for arg in "$@"; do
 done
 
 echo "========================================================================"
-echo "🛡️  GUARDIAN END-TO-END DEMO ORCHESTRATOR"
+echo "🛡️  SWITCHGUARD END-TO-END DEMO ORCHESTRATOR"
 echo "========================================================================"
 
 export DEMO_FORCE_RECALC="${DEMO_FORCE_RECALC:-1}"
@@ -38,6 +38,7 @@ if ! python3 -c "import fastapi, uvicorn, requests, yaml, pydantic, prometheus_c
     fi
     echo "==> Activating .venv and installing dependencies..."
     source .venv/bin/activate
+    pip install -q --upgrade pip setuptools wheel
     pip install -q --no-cache-dir -r requirements.txt
     pip install -q --no-cache-dir -e .
 fi
