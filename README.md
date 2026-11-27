@@ -317,7 +317,7 @@ Guardian is engineered with security-conscious defaults:
 * **Network & Ingress Hardening**: Localhost loopback binding (`127.0.0.1:8080`) by default; write endpoints enforce 64 KB request size limits and sliding-window rate limiting (proved by `tests/test_security.py`).
 * **Secret Scrubbing**: Sensitive tokens and passwords are automatically redacted from all application logs via `SecretRedactingFilter` (proved by `tests/test_security.py`). Credentials in query parameters (`?token=...`) are explicitly forbidden.
 
-See [SECURITY.md](SECURITY.md) for vulnerability disclosure policies and architectural details.
+See [SECURITY.md](SECURITY.md) for vulnerability disclosure policies and architectural details, and [docs/deploy.md](docs/deploy.md) for free-tier cloud deployment (Render Blueprint or Docker Compose + Caddy HTTPS).
 
 ---
 

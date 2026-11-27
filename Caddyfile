@@ -1,0 +1,3 @@
+{$GUARDIAN_DOMAIN::80} {
+    reverse_proxy guardian:8080
+}

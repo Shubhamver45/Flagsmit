@@ -1,0 +1,55 @@
+# Production deployment for Guardian + automatic HTTPS reverse proxy (Caddy)
+# Usage:
+#   cp .env.example .env   # set GUARDIAN_API_TOKEN, FLAGSMITH_WEBHOOK_SECRET, FLAGSMITH_* keys, GUARDIAN_DOMAIN
+#   cp config.example.yaml config.yaml
+#   docker compose -f docker-compose.prod.yml up -d
+
+volumes:
+  guardian-data:
+  caddy-data:
+  caddy-config:
+
+services:
+  guardian:
+    image: ghcr.io/shubhamver45/flagsmith-guardian:latest
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      GUARDIAN_ENV: production
+      GUARDIAN_API_TOKEN: ${GUARDIAN_API_TOKEN:?Set GUARDIAN_API_TOKEN in .env}
+      FLAGSMITH_WEBHOOK_SECRET: ${FLAGSMITH_WEBHOOK_SECRET:?Set FLAGSMITH_WEBHOOK_SECRET in .env}
+      FLAGSMITH_URL: ${FLAGSMITH_URL:?Set FLAGSMITH_URL in .env}
+      FLAGSMITH_ADMIN_API_KEY: ${FLAGSMITH_ADMIN_API_KEY:?Set FLAGSMITH_ADMIN_API_KEY in .env}
+      FLAGSMITH_ENVIRONMENT_KEY: ${FLAGSMITH_ENVIRONMENT_KEY:?Set FLAGSMITH_ENVIRONMENT_KEY in .env}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      GUARDIAN_CONFIG_PATH: /app/config.yaml
+      GUARDIAN_DB_PATH: /app/data/guardian.db
+    volumes:
+      - guardian-data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      guardian:
+        condition: service_healthy
+    environment:
+      GUARDIAN_DOMAIN: ${GUARDIAN_DOMAIN:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config

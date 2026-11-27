@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: flagsmith-guardian
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GUARDIAN_ENV
+        value: production
+      - key: GUARDIAN_CONFIG_PATH
+        value: /app/config.example.yaml
+      - key: GUARDIAN_API_TOKEN
+        generateValue: true
+      - key: FLAGSMITH_WEBHOOK_SECRET
+        generateValue: true
+      - key: FLAGSMITH_URL
+        sync: false
+      - key: FLAGSMITH_ADMIN_API_KEY
+        sync: false
+      - key: FLAGSMITH_ENVIRONMENT_KEY
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
