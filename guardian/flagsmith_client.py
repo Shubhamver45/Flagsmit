@@ -5,7 +5,13 @@ Operates strictly on normal rollout flags (separate from experimentation engine)
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Optional, Protocol, Union
+import logging
+from typing import Any, Dict, List, Optional, Protocol, Union
+
+logger = logging.getLogger(__name__)
+
+# Default timeouts and retry settings
+_DEFAULT_TIMEOUT = 10.0  # seconds
 
 
 class FlagsmithClientProtocol(Protocol):
@@ -39,8 +45,12 @@ class FlagsmithAdminClient:
         project_id: Optional[int] = None,
         environment_id: Optional[int] = None,
         session: Optional[Any] = None,
+        timeout: float = _DEFAULT_TIMEOUT,
     ):
         import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
         api_url = api_url.rstrip("/")
         if not api_url.endswith("/api/v1"):
             api_url = f"{api_url}/api/v1"
@@ -49,7 +59,22 @@ class FlagsmithAdminClient:
         self.environment_key = environment_key
         self._project_id = project_id
         self._environment_id = environment_id
-        self.session = session or requests.Session()
+        self.timeout = timeout
+
+        if session is not None:
+            self.session = session
+        else:
+            self.session = requests.Session()
+            retry = Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[502, 503, 504],
+                allowed_methods=["GET", "HEAD", "OPTIONS"],
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
+
         self.session.headers.update({
             "Authorization": f"Api-Key {self.admin_api_key}",
             "Content-Type": "application/json",
@@ -58,7 +83,7 @@ class FlagsmithAdminClient:
     def get_environment_details(self) -> Dict[str, Any]:
         """Dynamically fetch environment details by environment_key (resolves environment_id and project_id)."""
         url = f"{self.api_url}/environments/{self.environment_key}/"
-        resp = self.session.get(url)
+        resp = self.session.get(url, timeout=self.timeout)
         resp.raise_for_status()
         data = resp.json()
         if self._environment_id is None and "id" in data:
@@ -81,7 +106,7 @@ class FlagsmithAdminClient:
 
     def get_feature(self, flag_name: str) -> Dict[str, Any]:
         url = f"{self.api_url}/projects/{self.project_id}/features/"
-        resp = self.session.get(url, params={"q": flag_name})
+        resp = self.session.get(url, params={"q": flag_name}, timeout=self.timeout)
         resp.raise_for_status()
         results = resp.json().get("results", [])
         for feat in results:
@@ -95,7 +120,7 @@ class FlagsmithAdminClient:
 
         # Fetch environment feature states
         url = f"{self.api_url}/environments/{self.environment_key}/featurestates/"
-        resp = self.session.get(url, params={"feature": feature_id})
+        resp = self.session.get(url, params={"feature": feature_id}, timeout=self.timeout)
         resp.raise_for_status()
         results = resp.json().get("results", [])
         if not results:
@@ -149,7 +174,7 @@ class FlagsmithAdminClient:
             }
 
         url = f"{self.api_url}/features/featurestates/{fs_id}/"
-        resp = self.session.patch(url, json=payload)
+        resp = self.session.patch(url, json=payload, timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -183,6 +208,152 @@ class FlagsmithAdminClient:
             }
 
         url = f"{self.api_url}/features/featurestates/{fs_id}/"
-        resp = self.session.patch(url, json=payload)
+        resp = self.session.patch(url, json=payload, timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
+
+    # -------------------------------------------------------------------------
+    # Discovery endpoints (projects, environments, features)
+    # -------------------------------------------------------------------------
+    def list_projects(self) -> List[Dict[str, Any]]:
+        """List all projects accessible with the current admin API key."""
+        resp = self.session.get(f"{self.api_url}/projects/", timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        # Flagsmith returns a list directly (not paginated) for /projects/
+        return data if isinstance(data, list) else data.get("results", [])
+
+    def list_environments(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List environments for a project (defaults to the current project)."""
+        pid = project_id or self.project_id
+        resp = self.session.get(
+            f"{self.api_url}/environments/",
+            params={"project": pid},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", data) if isinstance(data, dict) else data
+
+    def list_features(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List feature flags for a project (defaults to the current project)."""
+        pid = project_id or self.project_id
+        results: List[Dict[str, Any]] = []
+        url = f"{self.api_url}/projects/{pid}/features/"
+        while url:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            page = resp.json()
+            if isinstance(page, list):
+                results.extend(page)
+                break
+            results.extend(page.get("results", []))
+            url = page.get("next")  # follow pagination
+        return results
+
+    def rollback_to_zero(self, flag_name: str, reason: str = "") -> Dict[str, Any]:
+        """
+        Emergency rollback: sets rollout percentage to 0.0 and disables the flag.
+        """
+        fs = self.get_environment_feature_state(flag_name)
+        fs_id = fs["id"]
+        env_id = fs.get("environment") or self.environment_id
+        mv_values = fs.get("multivariate_feature_state_values", [])
+
+        if mv_values:
+            mv_id = mv_values[0]["id"]
+            mv_opt_id = mv_values[0]["multivariate_feature_option"]
+            payload = {
+                "environment": env_id,
+                "enabled": False,
+                "multivariate_feature_state_values": [
+                    {
+                        "id": mv_id,
+                        "multivariate_feature_option": mv_opt_id,
+                        "percentage_allocation": 0.0,
+                    }
+                ],
+            }
+        else:
+            payload = {
+                "environment": env_id,
+                "enabled": False,
+            }
+
+        url = f"{self.api_url}/features/featurestates/{fs_id}/"
+        resp = self.session.patch(url, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def rollback_to_zero(self, flag_name: str, reason: str = "") -> Dict[str, Any]:
+        """
+        Emergency rollback: sets rollout percentage to 0.0 and disables the flag.
+        """
+        fs = self.get_environment_feature_state(flag_name)
+        fs_id = fs["id"]
+        env_id = fs.get("environment") or self.environment_id
+        mv_values = fs.get("multivariate_feature_state_values", [])
+
+        if mv_values:
+            mv_id = mv_values[0]["id"]
+            mv_opt_id = mv_values[0]["multivariate_feature_option"]
+            payload = {
+                "environment": env_id,
+                "enabled": False,
+                "multivariate_feature_state_values": [
+                    {
+                        "id": mv_id,
+                        "multivariate_feature_option": mv_opt_id,
+                        "percentage_allocation": 0.0,
+                    }
+                ],
+            }
+        else:
+            payload = {
+                "environment": env_id,
+                "enabled": False,
+            }
+
+        url = f"{self.api_url}/features/featurestates/{fs_id}/"
+        resp = self.session.patch(url, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    # -------------------------------------------------------------------------
+    # Discovery endpoints (projects, environments, features)
+    # -------------------------------------------------------------------------
+    def list_projects(self) -> List[Dict[str, Any]]:
+        """List all projects accessible with the current admin API key."""
+        resp = self.session.get(f"{self.api_url}/projects/", timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        # Flagsmith returns a list directly (not paginated) for /projects/
+        return data if isinstance(data, list) else data.get("results", [])
+
+    def list_environments(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List environments for a project (defaults to the current project)."""
+        pid = project_id or self.project_id
+        resp = self.session.get(
+            f"{self.api_url}/environments/",
+            params={"project": pid},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", data) if isinstance(data, dict) else data
+
+    def list_features(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List feature flags for a project (defaults to the current project)."""
+        pid = project_id or self.project_id
+        results: List[Dict[str, Any]] = []
+        url = f"{self.api_url}/projects/{pid}/features/"
+        while url:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            page = resp.json()
+            if isinstance(page, list):
+                results.extend(page)
+                break
+            results.extend(page.get("results", []))
+            url = page.get("next")  # follow pagination
+        return results

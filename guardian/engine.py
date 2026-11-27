@@ -104,6 +104,7 @@ class GuardianEngine:
                     current_stage_index=saved["current_stage_index"],
                     stage_entered_at=saved["stage_entered_at"],
                     is_approved=saved["is_approved"],
+                    paused_from_state=saved.get("paused_from_state"),
                 )
                 expected_pct = sm.current_percentage
                 stored_state = sm.current_state
@@ -648,6 +649,32 @@ class GuardianEngine:
                 elif decision == RolloutDecision.ROLLBACK:
                     self.storage.record_write(flag_name, 0.0, written_at=now)
                     self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
+                    # --- Incident Intelligence: record this automated rollback ---
+                    try:
+                        from guardian.incident import Incident
+                        metric_name = numbers.get("metric_name")
+                        observed_val = numbers.get("metric_value")
+                        threshold = numbers.get("threshold")
+                        incident = Incident(
+                            flag_name=flag_name,
+                            trigger_type="GUARDRAIL_BREACH",
+                            action_taken="ROLLBACK",
+                            explanation=(
+                                f"Guardrail breach detected: {metric_name or 'unknown metric'} "
+                                f"observed {observed_val} (threshold {threshold}). "
+                                f"Guardian automatically rolled back {flag_name} from "
+                                f"{numbers.get('rolled_back_from_percentage', prev_state)}% to 0%."
+                            ),
+                            metric_name=metric_name,
+                            observed_value=float(observed_val) if observed_val is not None else None,
+                            threshold=float(threshold) if threshold is not None else None,
+                            state_at_trigger=prev_state,
+                            percentage_at_trigger=numbers.get("rolled_back_from_percentage"),
+                            triggered_at=now if now is not None else time.time(),
+                        )
+                        self.storage.save_incident(incident)
+                    except Exception as inc_err:
+                        logger.warning(f"Could not save incident record: {inc_err}")
 
                 self.idempotency_manager.mark_executed(
                     flag_name=flag_name,
@@ -936,6 +963,65 @@ class GuardianEngine:
             )
 
         return last_entry or self.audit_logger.get_latest()
+
+    # -------------------------------------------------------------------------
+    # Pause / Resume
+    # -------------------------------------------------------------------------
+    def pause(self, flag_name: Optional[str] = None) -> AuditEntry:
+        """Pause a live rollout at its current stage without rolling back."""
+        fname = flag_name or self.config.flag_name
+        sm = self.state_machines.get(fname)
+        if not sm:
+            raise ValueError(f"Unknown flag '{fname}'")
+
+        prev_state = sm.current_state
+        new_state, decision, reason, numbers = sm.pause()
+
+        self.storage.save_rollout_state(
+            flag_name=fname,
+            current_state=new_state,
+            current_stage_index=sm.current_stage_index,
+            stage_entered_at=sm.stage_entered_at,
+            current_percentage=sm.current_percentage,
+            is_approved=sm.is_approved,
+            paused_from_state=prev_state,
+        )
+        return self.audit_logger.record(
+            flag_name=fname,
+            from_state=prev_state,
+            to_state=new_state,
+            decision=decision.value,
+            reason=reason,
+            numbers=numbers,
+        )
+
+    def resume(self, flag_name: Optional[str] = None) -> AuditEntry:
+        """Resume a PAUSED rollout, restoring the state before pause."""
+        fname = flag_name or self.config.flag_name
+        sm = self.state_machines.get(fname)
+        if not sm:
+            raise ValueError(f"Unknown flag '{fname}'")
+
+        prev_state = sm.current_state
+        new_state, decision, reason, numbers = sm.resume()
+
+        self.storage.save_rollout_state(
+            flag_name=fname,
+            current_state=new_state,
+            current_stage_index=sm.current_stage_index,
+            stage_entered_at=sm.stage_entered_at,
+            current_percentage=sm.current_percentage,
+            is_approved=sm.is_approved,
+            paused_from_state=None,
+        )
+        return self.audit_logger.record(
+            flag_name=fname,
+            from_state=prev_state,
+            to_state=new_state,
+            decision=decision.value,
+            reason=reason,
+            numbers=numbers,
+        )
 
     # -------------------------------------------------------------------------
     # Status Reporting

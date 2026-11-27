@@ -56,9 +56,16 @@ class GuardianStorage:
                     is_approved INTEGER NOT NULL DEFAULT 0,
                     drift_detected INTEGER NOT NULL DEFAULT 0,
                     drift_details TEXT,
+                    paused_from_state TEXT,
                     updated_at REAL NOT NULL
                 );
             """)
+            try:
+                r_cols = [row[1] for row in self._conn.execute("PRAGMA table_info(rollouts)").fetchall()]
+                if "paused_from_state" not in r_cols:
+                    self._conn.execute("ALTER TABLE rollouts ADD COLUMN paused_from_state TEXT;")
+            except Exception:
+                pass
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +121,23 @@ class GuardianStorage:
                 );
             """)
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_write_ledger_flag ON write_ledger(flag_name, written_at);")
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flag_name TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL,
+                    action_taken TEXT NOT NULL,
+                    explanation TEXT NOT NULL,
+                    metric_name TEXT,
+                    observed_value REAL,
+                    threshold REAL,
+                    state_at_trigger TEXT,
+                    percentage_at_trigger REAL,
+                    triggered_at REAL NOT NULL,
+                    resolved_at REAL
+                );
+            """)
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_flag ON incidents(flag_name, triggered_at);")
 
     # -------------------------------------------------------------------------
     # Rollout State
@@ -128,6 +152,7 @@ class GuardianStorage:
         is_approved: bool = False,
         drift_detected: bool = False,
         drift_details: Optional[Dict[str, Any]] = None,
+        paused_from_state: Optional[str] = None,
         now: Optional[float] = None,
     ) -> None:
         now = now if now is not None else time.time()
@@ -137,8 +162,8 @@ class GuardianStorage:
                 """
                 INSERT INTO rollouts (
                     flag_name, current_state, current_stage_index, stage_entered_at,
-                    current_percentage, is_approved, drift_detected, drift_details, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    current_percentage, is_approved, drift_detected, drift_details, paused_from_state, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(flag_name) DO UPDATE SET
                     current_state = excluded.current_state,
                     current_stage_index = excluded.current_stage_index,
@@ -147,6 +172,7 @@ class GuardianStorage:
                     is_approved = excluded.is_approved,
                     drift_detected = excluded.drift_detected,
                     drift_details = excluded.drift_details,
+                    paused_from_state = excluded.paused_from_state,
                     updated_at = excluded.updated_at;
                 """,
                 (
@@ -158,6 +184,7 @@ class GuardianStorage:
                     1 if is_approved else 0,
                     1 if drift_detected else 0,
                     drift_str,
+                    paused_from_state,
                     now,
                 ),
             )
@@ -186,6 +213,7 @@ class GuardianStorage:
                 "is_approved": bool(row["is_approved"]),
                 "drift_detected": bool(row["drift_detected"]),
                 "drift_details": drift_details,
+                "paused_from_state": row["paused_from_state"] if "paused_from_state" in row.keys() else None,
                 "updated_at": row["updated_at"],
             }
 
@@ -488,3 +516,98 @@ class GuardianStorage:
                 except Exception:
                     pass
                 self._local.conn = None
+
+
+    # -------------------------------------------------------------------------
+    # Incidents
+    # -------------------------------------------------------------------------
+    def save_incident(self, incident: Any) -> int:
+        """Persist an Incident dataclass; sets incident.id on the object."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO incidents (
+                    flag_name, trigger_type, action_taken, explanation,
+                    metric_name, observed_value, threshold,
+                    state_at_trigger, percentage_at_trigger,
+                    triggered_at, resolved_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    incident.flag_name,
+                    incident.trigger_type,
+                    incident.action_taken,
+                    incident.explanation,
+                    getattr(incident, "metric_name", None),
+                    getattr(incident, "observed_value", None),
+                    getattr(incident, "threshold", None),
+                    getattr(incident, "state_at_trigger", None),
+                    getattr(incident, "percentage_at_trigger", None),
+                    incident.triggered_at,
+                    getattr(incident, "resolved_at", None),
+                ),
+            )
+            incident.id = cur.lastrowid
+            return incident.id
+
+    def resolve_incident(self, incident_id: int, now: Optional[float] = None) -> None:
+        now = now if now is not None else time.time()
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE incidents SET resolved_at = ? WHERE id = ?",
+                (now, incident_id),
+            )
+
+    def get_incidents(
+        self,
+        flag_name: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_resolved: bool = True,
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            clauses: List[str] = []
+            params: List[Any] = []
+            if flag_name:
+                clauses.append("flag_name = ?")
+                params.append(flag_name)
+            if not include_resolved:
+                clauses.append("resolved_at IS NULL")
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.extend([limit, offset])
+            cur = self._conn.execute(
+                f"SELECT * FROM incidents {where} ORDER BY triggered_at DESC, id DESC LIMIT ? OFFSET ?",
+                params,
+            )
+            rows = []
+            for r in cur.fetchall():
+                d = dict(r)
+                if d.get("triggered_at") and d.get("resolved_at"):
+                    d["containment_duration_seconds"] = round(
+                        d["resolved_at"] - d["triggered_at"], 2
+                    )
+                else:
+                    d["containment_duration_seconds"] = None
+                d["is_resolved"] = d.get("resolved_at") is not None
+                rows.append(d)
+            return rows
+
+    def count_incidents(
+        self,
+        flag_name: Optional[str] = None,
+        include_resolved: bool = True,
+    ) -> int:
+        with self._lock:
+            clauses: List[str] = []
+            params: List[Any] = []
+            if flag_name:
+                clauses.append("flag_name = ?")
+                params.append(flag_name)
+            if not include_resolved:
+                clauses.append("resolved_at IS NULL")
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM incidents {where}",
+                params,
+            ).fetchone()
+            return int(row["cnt"]) if row else 0

@@ -16,6 +16,7 @@ class RolloutState(str, Enum):
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     PROMOTED = "PROMOTED"
     ROLLED_BACK = "ROLLED_BACK"
+    PAUSED = "PAUSED"
 
     @classmethod
     def stage_name(cls, stage_index: int) -> str:
@@ -47,11 +48,16 @@ class RolloutStateMachine:
         current_stage_index: int,
         stage_entered_at: Optional[float],
         is_approved: bool = False,
+        paused_from_state: Optional[str] = None,
     ) -> None:
         self.current_state = current_state
         self.current_stage_index = current_stage_index
         self.stage_entered_at = stage_entered_at
         self.is_approved = is_approved
+        if paused_from_state:
+            self._paused_state = paused_from_state
+            self._paused_stage_index = current_stage_index
+            self._paused_stage_entered_at = stage_entered_at
 
     @property
     def current_percentage(self) -> float:
@@ -165,6 +171,11 @@ class RolloutStateMachine:
             numbers = {"current_percentage": self.current_percentage, "state": self.current_state}
             return self.current_state, RolloutDecision.HOLD, "Rollout fully promoted at 100%. Guardrails healthy.", numbers
 
+        # If PAUSED, hold at current percentage without advancing stages
+        if self.current_state == RolloutState.PAUSED.value:
+            numbers = {"current_percentage": self.current_percentage, "state": self.current_state}
+            return self.current_state, RolloutDecision.HOLD, "Rollout is paused by operator. Guardrails healthy.", numbers
+
         # 3. If AWAITING_APPROVAL, check if human approval was granted
         if self.current_state == RolloutState.AWAITING_APPROVAL.value:
             if self.is_approved:
@@ -242,6 +253,48 @@ class RolloutStateMachine:
     def approve(self) -> None:
         """Grant human approval for final stage promotion."""
         self.is_approved = True
+
+    def pause(self) -> Tuple[str, RolloutDecision, str, Dict[str, Any]]:
+        """Pause the rollout at its current stage.  Preserves state for resume()."""
+        if self.current_state in (
+            RolloutState.PROMOTED.value,
+            RolloutState.ROLLED_BACK.value,
+            RolloutState.PENDING.value,
+            RolloutState.PAUSED.value,
+        ):
+            raise ValueError(f"Cannot pause rollout in terminal/inactive state '{self.current_state}'")
+        self._paused_state = self.current_state
+        self._paused_stage_index = self.current_stage_index
+        self._paused_stage_entered_at = self.stage_entered_at
+        self.current_state = RolloutState.PAUSED.value
+        numbers = {
+            "paused_from_state": self._paused_state,
+            "paused_percentage": self.current_percentage,
+        }
+        reason = f"Rollout paused by operator at {self._paused_state} ({self.current_percentage}%)."
+        return self.current_state, RolloutDecision.HOLD, reason, numbers
+
+    def resume(self) -> Tuple[str, RolloutDecision, str, Dict[str, Any]]:
+        """Resume a paused rollout, restoring the pre-pause state."""
+        if self.current_state != RolloutState.PAUSED.value:
+            raise ValueError(f"Cannot resume rollout that is not PAUSED (current: '{self.current_state}')")
+        paused_from = getattr(self, "_paused_state", None)
+        if not paused_from or paused_from == "UNKNOWN":
+            paused_from = (
+                RolloutState.stage_name(self.current_stage_index)
+                if self.current_stage_index >= 0
+                else RolloutState.PENDING.value
+            )
+        self.current_state = paused_from
+        self.current_stage_index = getattr(self, "_paused_stage_index", self.current_stage_index)
+        self.stage_entered_at = getattr(self, "_paused_stage_entered_at", self.stage_entered_at)
+        self._paused_state = None
+        numbers = {
+            "resumed_to_state": self.current_state,
+            "current_percentage": self.current_percentage,
+        }
+        reason = f"Rollout resumed by operator. Restored to {self.current_state} ({self.current_percentage}%)."
+        return self.current_state, RolloutDecision.ADVANCE, reason, numbers
 
     def manual_rollback(self) -> Tuple[str, RolloutDecision, str, Dict[str, Any]]:
         """Explicit manual rollback trigger."""
