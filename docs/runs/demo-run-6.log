@@ -1,0 +1,559 @@
+========================================================================
+🛡️  GUARDIAN END-TO-END DEMO ORCHESTRATOR
+========================================================================
+⚡ Quickstart Mode: DEMO_FORCE_RECALC=1 active (demo shortcut: immediate recalculation for <2-minute run)
+==> Python dependencies not found in active environment.
+==> Activating .venv and installing dependencies...
+==> Step 1: Starting Flagsmith, PostgreSQL, Task Processor, and Prometheus...
+ Network flagsmith_default Creating 
+ Volume flagsmith_pgdata Creating 
+ Volume flagsmith_pgdata Creating 
+ Network flagsmith_default Creating 
+ Volume flagsmith_pgdata Created 
+ Volume flagsmith_pgdata Created 
+ Network flagsmith_default Created 
+ Network flagsmith_default Created 
+ Container flagsmith_postgres Creating 
+ Container flagsmith_postgres Created 
+ Container flagsmith-migrate-db-1 Creating 
+ Container flagsmith-migrate-db-1 Created 
+ Container flagsmith-flagsmith-1 Creating 
+ Container flagsmith-flagsmith-task-processor-1 Creating 
+ Container flagsmith-flagsmith-task-processor-1 Created 
+ Container flagsmith-flagsmith-1 Created 
+ Container flagsmith_demo_app Creating 
+ Container flagsmith_demo_app Created 
+ Container flagsmith_prometheus Creating 
+ Container flagsmith_prometheus Created 
+ Container flagsmith_postgres Starting 
+ Container flagsmith_postgres Started 
+ Container flagsmith_postgres Waiting 
+ Container flagsmith_postgres Healthy 
+ Container flagsmith-migrate-db-1 Starting 
+ Container flagsmith-migrate-db-1 Started 
+ Container flagsmith-migrate-db-1 Waiting 
+ Container flagsmith-migrate-db-1 Waiting 
+ Container flagsmith-migrate-db-1 Exited 
+ Container flagsmith-migrate-db-1 Exited 
+ Container flagsmith-flagsmith-task-processor-1 Starting 
+ Container flagsmith-flagsmith-1 Starting 
+ Container flagsmith-flagsmith-task-processor-1 Started 
+ Container flagsmith-flagsmith-1 Started 
+ Container flagsmith-flagsmith-1 Waiting 
+ Container flagsmith-flagsmith-1 Healthy 
+ Container flagsmith_demo_app Starting 
+ Container flagsmith_demo_app Started 
+ Container flagsmith_prometheus Starting 
+ Container flagsmith_prometheus Started 
+==> Waiting for Flagsmith API to become ready...
+  ✔ Flagsmith API is ready (http://localhost:8000/api/v1/)
+.  ✔ Prometheus is ready (http://localhost:9090/-/healthy)
+==> Step 2: Auto-provisioning Flagsmith (Org, Project, Environment, Flag, Master Key)...
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+ flagsmith-flagsmith-1 Copying /private/tmp/guardian-fresh-verify/flagsmith-guardian/scripts/setup_flagsmith.py to flagsmith-flagsmith-1:/app/setup_flagsmith.py
+ flagsmith-flagsmith-1 Copied /private/tmp/guardian-fresh-verify/flagsmith-guardian/scripts/setup_flagsmith.py to flagsmith-flagsmith-1:/app/setup_flagsmith.py
+==> Copying setup script into Flagsmith container...
+==> Executing core DB setup inside Flagsmith Django shell (admin user, org, project, env, master key)...
+2026-11-27T13:07:06.546675Z [info     ] Invoking Django                [common.core.main] positional_args=()
+156 objects imported automatically (use -v 2 for details).
+
+User: admin@example.com (created: True)
+Organisation: Guardian Org [ID=1]
+Project: Guardian Project [ID=1]
+Environment: Development [ID=1, Key=<REDACTED_DEMO_ENV_KEY>]
+Admin API Key Prefix: akloNmAy
+Admin API Key: written to .env
+Ops API Key Prefix: B9edjCHx
+Ops API Key: written to .env
+Verifying Flagsmith Database Warehouse connection for environment 'Development'...
+Warehouse Connection Status: connected (detail: None)
+
+=== SETUP SUMMARY (CORE PRIMITIVES) ===
+Dashboard URL: http://localhost:8000
+Admin Login: admin@example.com (password: written to .env)
+Organisation: Guardian Org (ID: 1)
+Project: Guardian Project (ID: 1)
+Environment: Development (ID: 1)
+Environment Client Key: <REDACTED_DEMO_ENV_KEY>
+Admin API Key: written to .env
+Guardian API Token: written to .env
+Warehouse Status: connected
+✔ Admin API key and password written to /private/tmp/guardian-fresh-verify/flagsmith-guardian/.env
+==> Configuring Flags, Metric, and Experiment via Public Admin API...
+  ✔ Verified Admin login via POST /api/v1/auth/login/ (login OK)
+  ✔ Created multivariate feature 'new_checkout' via Admin API (ID=1)
+  ✔ Reset environment feature state for 'new_checkout' to 0.0% (disabled)
+  ✔ Created multivariate feature 'checkout_experiment' via Admin API (ID=2)
+  ✔ Created metric 'Checkout Completed' via Admin API (ID=1, aggregation='occurrence')
+    ℹ Note on aggregation='occurrence': tracks per-identity conversion (each user converts at most once in occurrence calculation)
+  ✔ Created experiment 'Checkout A/B Experiment' via Admin API (ID=1)
+  ✔ Started experiment via Admin API (status=running)
+  ✔ Configured 50/50 variant allocation on environment feature state via Admin API
+  ✔ Registered Guardian environment webhook via Admin API (http://host.docker.internal:8080/webhooks/flagsmith)
+==> Step 3: Starting Demo Checkout App container...
+ Image flagsmith-demo-app Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 572B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 295B 0.0s done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 0.1s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 10.36kB 0.0s done
+#5 DONE 0.0s
+
+#6 [1/5] FROM docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+#6 resolve docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b 0.1s done
+#6 DONE 0.1s
+
+#7 [2/5] WORKDIR /app
+#7 CACHED
+
+#8 [3/5] COPY requirements.txt .
+#8 CACHED
+
+#9 [4/5] RUN pip install --no-cache-dir -r requirements.txt
+#9 CACHED
+
+#10 [5/5] COPY app.py .
+#10 CACHED
+
+#11 exporting to image
+#11 exporting layers 0.0s done
+#11 exporting manifest sha256:4cacc5f5319bfbb3d8f22bb861e74d9c0142d767fbe4cc5a0653b64b34b094b2 done
+#11 exporting config sha256:1337e35f566cf93b1c6bceacff774a24e96fac9b5508bed3fd365721c615de14 done
+#11 exporting attestation manifest sha256:aa82ef4035ab4b60dbeb52e2717833d6aa5de8d7023b5d147a24de35d57315e4 0.0s done
+#11 exporting manifest list sha256:3c7e62aa42fad2acfa9e3ac7ee949a335ad2b7f6d658781b1a987e6cf82706f6
+#11 exporting manifest list sha256:3c7e62aa42fad2acfa9e3ac7ee949a335ad2b7f6d658781b1a987e6cf82706f6 0.0s done
+#11 naming to docker.io/library/flagsmith-demo-app:latest done
+#11 unpacking to docker.io/library/flagsmith-demo-app:latest 0.0s done
+#11 DONE 0.3s
+
+#12 resolving provenance for metadata file
+#12 DONE 0.0s
+ Image flagsmith-demo-app Built 
+ Container flagsmith_postgres Running 
+ Container flagsmith-flagsmith-1 Running 
+ Container flagsmith_demo_app Recreate 
+ Container flagsmith_demo_app Recreated 
+ Container flagsmith_postgres Waiting 
+ Container flagsmith_postgres Healthy 
+ Container flagsmith-migrate-db-1 Starting 
+ Container flagsmith-migrate-db-1 Started 
+ Container flagsmith-migrate-db-1 Waiting 
+ Container flagsmith-migrate-db-1 Exited 
+ Container flagsmith-flagsmith-1 Waiting 
+ Container flagsmith-flagsmith-1 Healthy 
+ Container flagsmith_demo_app Starting 
+ Container flagsmith_demo_app Started 
+.  ✔ Demo Checkout App is ready (http://localhost:5001/health)
+==> Generating config.yaml from config.demo.yaml...
+==> Step 4: Launching Guardian daemon on http://localhost:8080 (DEMO_MODE=1, soak: 3s)...
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+...  ✔ Guardian Status API is ready (http://localhost:8080/health)
+==> Step 5: Starting initial traffic simulator (15 distinct user identities for Phase 1 & 2)...
+
+========================================================================
+🎉 ALL SYSTEMS READY — EXECUTING DEMO WORKFLOW
+========================================================================
+  • Guardian Live Dashboard : http://localhost:8080/
+  • Flagsmith UI            : http://localhost:8000/ (admin@example.com / see README)
+  • Demo Checkout App       : http://localhost:5001/
+  • Prometheus Graph        : http://localhost:9090/
+========================================================================
+==> Verifying Flagsmith Admin Authentication via POST /api/v1/auth/login/:
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  login OK
+==> Verifying Guardian write endpoint authentication in demo mode (unauthenticated POST /approve must return 401):
+  ✔ Unauthenticated POST /approve returned HTTP 401 Unauthorized as expected
+
+--- Phase 1: Progressive Rollout & Mid-Rollout Drift Detection ---
+Flag 'new_checkout' is advancing through stages under healthy error rate (< 5.0%)...
+  ⏳ Waiting for Guardian state 'STAGE_1'... [OK: STAGE_1 (1.0%)]
+
+--- Mid-Rollout Scenario: Out-of-Band State Change & Real-Time Drift Detection ---
+Simulating external operator ('ops-engineer') altering 'new_checkout' to 50% via Admin API...
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  ✔ External operator (ops-engineer) changed flag to 50% in Flagsmith (triggering real-time webhook to Guardian)
+Verifying Guardian detects drift, pauses rollout, and surfaces drift alert:
+⚠️  [DRIFT DETECTED via Webhook] Flag 'new_checkout' modified out-of-band by ops-engineer: actual 50.0% differs from expected 1.0% (STAGE_1). Holding rollout.
+
+========================================================================
+⚠️  DRIFT WARNING DETECTED (measured latency: 8.89s)
+  • Flag       : new_checkout
+  • Detection  : webhook
+  • Modified By: ops-engineer
+  • Actual %   : 50.0%
+  • Expected % : 1.0% (STAGE_1)
+  • Status     : Rollout Execution HELD
+========================================================================
+
+==> Security Test: Verifying HMAC-SHA256 signature enforcement (POST /webhooks/flagsmith):
+Testing with tampered / invalid signature (expected: HTTP 401 Unauthorized):
+HTTP/1.1 401 Unauthorized
+date: Fri, 27 Nov 2026 13:07:51 GMT
+server: uvicorn
+content-length: 42
+content-type: application/json
+
+{"detail":"Invalid X-Flagsmith-Signature"}
+Resolving drift: Restoring flag allocation back to STAGE_1 (1.0%) in Flagsmith:
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  ✔ Restored flag allocation to 1% in Flagsmith (drift auto-resolved)
+Advancing through remaining stages to Awaiting Approval...
+  ⏳ Waiting for Guardian state 'AWAITING_APPROVAL'............ [OK: AWAITING_APPROVAL (25.0%)]
+
+--- Phase 2 (Scenario 1): Approval Gate Blocks on Insufficient Data ---
+Rollout reached 25% and is holding before 100% promotion.
+Flagsmith is actively collecting events (<50 identities/arm or <5 conversions).
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-27T13:08:28.190317Z (demo shortcut)
+  • Chance to be Worse: n/a (collecting data)
+  • SRM Status        : Healthy (p-value: n/a (collecting data))
+  • SRM p-value       : n/a (collecting data)
+  • Collecting Data   : True
+  • Approval Gate     : BLOCKED: Approval blocked: Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Statistical inference not yet available.
+Attempting operator approval while data is still collecting:
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Error (400): Approval blocked: Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Statistical inference not yet available.
+==> Sending approval to Guardian at http://localhost:8080...
+✔ As expected, operator approval is strictly blocked when Flagsmith is still collecting data.
+
+--- Phase 2 (Scenario 2): Approval Gate Blocks on Underperforming (WORSE) Variation ---
+Setting experiment mode to 'worse' (per-identity conversion: control ~60%, variation ~35%)...
+ℹ Metric aggregation='occurrence': tracks per-identity conversion rates (each user converts at most once).
+{
+    "experiment_mode": "worse",
+    "status": "ok"
+}
+Generating traffic for worse variation to calculate statistical underperformance...
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+
+==> Raw Flagsmith Experiment Results (Variation Clearly Worse):
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+{
+  "results": {
+    "as_of": "2026-11-27T13:08:57.508816Z",
+    "last_error_at": null,
+    "refresh_requested_at": "2026-11-27T13:02:57.566206Z",
+    "payload": {
+      "metrics": [
+        {
+          "variants": {
+            "control": {
+              "n": 63,
+              "sum": 42.0,
+              "sum_squares": 42.0
+            },
+            "variation": {
+              "n": 78,
+              "sum": 20.0,
+              "sum_squares": 20.0
+            }
+          },
+          "inference": {
+            "variation": {
+              "lift": -0.6153846153846154,
+              "ci_low": -0.7765828953977978,
+              "ci_high": -0.454186335371433,
+              "chance_to_win": 3.652633751016765e-14
+            }
+          },
+          "metric_id": 1,
+          "conversions_timeseries": {
+            "points": [
+              {
+                "bucket": "2026-11-27T13:00:00+00:00",
+                "converted_identities": {
+                  "control": 42,
+                  "variation": 20
+                }
+              }
+            ],
+            "granularity": "hour"
+          }
+        }
+      ],
+      "srm_p_value": 0.206507295485425,
+      "exposures_timeseries": {
+        "points": [
+          {
+            "bucket": "2026-11-27T13:00:00+00:00",
+            "new_identities": {
+              "control": 63,
+              "variation": 78
+            }
+          }
+        ],
+        "granularity": "hour"
+      }
+    },
+    "is_final": false
+  }
+}
+
+==> Guardian Status Check (Gate Evaluation for Worse Variation):
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-27T13:08:57.508816Z (demo shortcut)
+  • Chance to be Worse: 100.0%
+  • Chance to Win     : 0.0% (95% CI: [-0.777, -0.454])
+  • SRM Status        : Healthy (p-value: 0.2065)
+  • SRM p-value       : 0.206507
+  • Collecting Data   : False
+  • Approval Gate     : BLOCKED: Approval blocked: Bayesian chance-to-be-worse (100.0%) exceeds configured limit (10.0%).
+Attempting operator approval while variation is underperforming:
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Error (400): Approval blocked: Bayesian chance-to-be-worse (100.0%) exceeds configured limit (10.0%).
+==> Sending approval to Guardian at http://localhost:8080...
+✔ As expected, operator approval is strictly BLOCKED by Guardian when variation is worse (chance to be worse > limit 10%).
+
+--- Phase 3: Happy-Path Decisive Winner Scenario & Human Operator Promotion ---
+Setting experiment mode to 'winner' (per-identity conversion: control ~25%, variation ~75%)...
+ℹ Verifying gate clearance under require_winner: true (chance to win >= 95.0% and 95% CI low > 0.0, no SRM).
+{
+    "experiment_mode": "winner",
+    "status": "ok"
+}
+Generating traffic for winner variation demonstrating positive lift...
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+
+==> Raw Flagsmith Experiment Results (Winner Variation Inference):
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+{
+  "results": {
+    "as_of": "2026-11-27T13:10:12.680892Z",
+    "last_error_at": null,
+    "refresh_requested_at": "2026-11-27T13:04:12.852220Z",
+    "payload": {
+      "metrics": [
+        {
+          "variants": {
+            "control": {
+              "n": 263,
+              "sum": 105.0,
+              "sum_squares": 105.0
+            },
+            "variation": {
+              "n": 297,
+              "sum": 179.0,
+              "sum_squares": 179.0
+            }
+          },
+          "inference": {
+            "variation": {
+              "lift": 0.5096039762706429,
+              "ci_low": 0.24545274611855428,
+              "ci_high": 0.7737552064227315,
+              "chance_to_win": 0.9999219591008073
+            }
+          },
+          "metric_id": 1,
+          "conversions_timeseries": {
+            "points": [
+              {
+                "bucket": "2026-11-27T13:00:00+00:00",
+                "converted_identities": {
+                  "control": 105,
+                  "variation": 179
+                }
+              }
+            ],
+            "granularity": "hour"
+          }
+        }
+      ],
+      "srm_p_value": 0.15078556502797125,
+      "exposures_timeseries": {
+        "points": [
+          {
+            "bucket": "2026-11-27T13:00:00+00:00",
+            "new_identities": {
+              "control": 263,
+              "variation": 297
+            }
+          }
+        ],
+        "granularity": "hour"
+      }
+    },
+    "is_final": false
+  }
+}
+
+==> Guardian Status Check (Gate Evaluation for Winner Variation):
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-27T13:10:12.680892Z (demo shortcut)
+  • Chance to be Worse: 0.0%
+  • Chance to Win     : 100.0% (95% CI: [0.245, 0.774])
+  • SRM Status        : Healthy (p-value: 0.1508)
+  • SRM p-value       : 0.150786
+  • Collecting Data   : False
+  • Approval Gate     : ELIGIBLE (Clear for 100% promotion)
+Executing operator promotion approval:
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+==> Sending approval to Guardian at http://localhost:8080...
+✅ Success: Promotion approved successfully for 'new_checkout'
+State: PROMOTED | Rollout: 100.0%
+  ⏳ Waiting for Guardian state 'PROMOTED'... [OK: PROMOTED (100.0%)]
+✔ Feature flag successfully promoted to 100%!
+
+--- Phase 4: Fault Injection (Failure Spike) & Automated Rollback ---
+Injecting fault into new checkout flow via Demo App (BUG_IN_NEW_CHECKOUT=1)...
+{
+    "bug_enabled": true
+}
+Traffic simulator is now receiving ~30% payment processing errors on new_flow.
+Guardian is monitoring Prometheus PromQL guardrail: error_rate > 5.0%...
+  ⏳ Waiting for Guardian state 'ROLLED_BACK'........ [OK: ROLLED_BACK (0.0%)]
+✔ Automated rollback to 0% completed in 7.3s!
+  • Time to Rollback: 7.3s (State: ROLLED_BACK)
+  • Slack Alert     : Slack alert skipped (no webhook set in .env)
+
+--- Phase 5 (Scenario 2): SRM Anomaly Simulation & Blocked Approval Gate ---
+Attempting operator re-arm via POST /reset (strictly rejected while guardrail is breaching)...
+  ℹ Re-arm rejected as expected: Error (400): Cannot re-arm rollout: Guardrail 'new_flow_error_rate' is currently breaching (observed 19.86%). Resolve the underlying fault before re-arming: Metric value 19.86% > threshold 5.0% (BREACH)
+  ⏳ Waiting for guardrail metric to recover before re-arm succeeds........
+✔ Rollout successfully re-armed to PENDING (guardrails healthy).
+Advancing back to AWAITING_APPROVAL stage...
+  ⏳ Waiting for Guardian state 'STAGE_1'.... [OK: STAGE_1 (1.0%)]
+  ⏳ Waiting for Guardian state 'AWAITING_APPROVAL'............... [OK: AWAITING_APPROVAL (25.0%)]
+Simulating Sample Ratio Mismatch (SRM) by dropping exposure events for variation arm...
+{
+    "simulate_srm": true
+}
+Sending skewed traffic to trigger real SRM in Flagsmith database...
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+
+==> Raw Flagsmith Experiment Results (SRM Warning Detected):
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+{
+  "results": {
+    "as_of": "2026-11-27T13:12:19.819088Z",
+    "last_error_at": null,
+    "refresh_requested_at": "2026-11-27T13:06:19.921309Z",
+    "payload": {
+      "metrics": [
+        {
+          "variants": {
+            "control": {
+              "n": 397,
+              "sum": 133.0,
+              "sum_squares": 133.0
+            },
+            "variation": {
+              "n": 297,
+              "sum": 179.0,
+              "sum_squares": 179.0
+            }
+          },
+          "inference": {
+            "variation": {
+              "lift": 0.7990177463861675,
+              "ci_low": 0.4990038394654998,
+              "ci_high": 1.0990316533068352,
+              "chance_to_win": 0.999999910495615
+            }
+          },
+          "metric_id": 1,
+          "conversions_timeseries": {
+            "points": [
+              {
+                "bucket": "2026-11-27T13:00:00+00:00",
+                "converted_identities": {
+                  "control": 133,
+                  "variation": 179
+                }
+              }
+            ],
+            "granularity": "hour"
+          }
+        }
+      ],
+      "srm_p_value": 0.00014708027455070594,
+      "exposures_timeseries": {
+        "points": [
+          {
+            "bucket": "2026-11-27T13:00:00+00:00",
+            "new_identities": {
+              "control": 397,
+              "variation": 297
+            }
+          }
+        ],
+        "granularity": "hour"
+      }
+    },
+    "is_final": false
+  }
+}
+
+==> Guardian Verification of SRM Anomaly:
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-27T13:12:19.819088Z (demo shortcut)
+  • Chance to be Worse: n/a (not evaluated: SRM)
+  • SRM Status        : WARNING (Corrupt, p-value: 0.000147)
+  • SRM p-value       : 0.000147
+  • Collecting Data   : False
+  • Approval Gate     : BLOCKED: Approval blocked: Sample Ratio Mismatch (SRM) detected (p-value 0.000147 < 0.001). Traffic assignment is corrupted.
+Attempting operator approval while SRM warning is active:
+/private/tmp/guardian-fresh-verify/flagsmith-guardian/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Error (400): Approval blocked: Sample Ratio Mismatch (SRM) detected (p-value 0.000147 < 0.001). Traffic assignment is corrupted.
+==> Sending approval to Guardian at http://localhost:8080...
+✔ As expected, operator approval is strictly BLOCKED by Guardian when real SRM anomaly fires.
+
+========================================================================
+🎉 DEMO RUN COMPLETED SUCCESSFULLY!
+========================================================================
+Final Rollout State: AWAITING_APPROVAL
+Final Rollout %    : 25.0%
+
+Audit Decision Trail:
+  [2026-11-27T13:07:54.656364+00:00] [ADVANCE] PENDING ➔ STAGE_1 (1%) | Rollout initiated at Stage 1 (1%).
+  [2026-11-27T13:07:57.515480+00:00] [DRIFT] STAGE_1 ➔ STAGE_1 (50.0%) | [DRIFT DETECTED via Webhook] Flag 'new_checkout' modified out-of-band by ops-engineer: actual 50.0% differs from expected 1.0% (STAGE_1).
+  [2026-11-27T13:07:58.204454+00:00] [RESOLVED] STAGE_1 ➔ STAGE_1 (1.0%) | [DRIFT RESOLVED via Webhook] Drift resolved via webhook: flag 'new_checkout' restored to expected 1.0% (STAGE_1).
+  [2026-11-27T13:08:05.668442+00:00] [ADVANCE] STAGE_1 ➔ STAGE_2 (5%) | Soak time satisfied and metrics healthy. Advanced to STAGE_2 (5%).
+  [2026-11-27T13:08:14.457873+00:00] [ADVANCE] STAGE_2 ➔ STAGE_3 (25%) | Soak time satisfied and metrics healthy. Advanced to STAGE_3 (25%).
+  [2026-11-27T13:08:22.857711+00:00] [AWAIT_APPROVAL] STAGE_3 ➔ AWAITING_APPROVAL (25% (next: 100%)) | Soak time completed for STAGE_3 (25.0%). Ready for final stage (100%), but requires human approval.
+  [2026-11-27T13:08:24.854652+00:00 .. 2026-11-27T13:10:15.997984+00:00] [HOLD (x41)] AWAITING_APPROVAL ➔ AWAITING_APPROVAL (25% (next: 100%)) | All guardrails healthy. Awaiting explicit human approval for final promotion.
+  [2026-11-27T13:10:23.793883+00:00] [PROMOTED] AWAITING_APPROVAL ➔ PROMOTED | Human approval granted. Promoted to final stage (100%).
+  [2026-11-27T13:10:25.927128+00:00 .. 2026-11-27T13:10:30.232160+00:00] [HOLD (x3)] PROMOTED ➔ PROMOTED (100.0%) | Rollout fully promoted at 100%. Guardrails healthy.
+  [2026-11-27T13:10:37.820769+00:00] [ROLLBACK] PROMOTED ➔ ROLLED_BACK | Metric value 13.79% > threshold 5.0% (BREACH)
+  [2026-11-27T13:10:41.066489+00:00 .. 2026-11-27T13:10:48.050090+00:00] [HOLD (x4)] ROLLED_BACK ➔ ROLLED_BACK (0.0%) | Rollout in terminal state: ROLLED_BACK
+  [2026-11-27T13:10:49.178138+00:00] [ADVANCE] ROLLED_BACK ➔ PENDING | Rollout 'new_checkout' reset to initial PENDING by operator.
+  [2026-11-27T13:10:56.990331+00:00] [ADVANCE] PENDING ➔ STAGE_1 (1%) | Rollout initiated at Stage 1 (1%).
+  [2026-11-27T13:11:07.469694+00:00] [ADVANCE] STAGE_1 ➔ STAGE_2 (5%) | Soak time satisfied and metrics healthy. Advanced to STAGE_2 (5%).
+  [2026-11-27T13:11:16.181908+00:00] [ADVANCE] STAGE_2 ➔ STAGE_3 (25%) | Soak time satisfied and metrics healthy. Advanced to STAGE_3 (25%).
+  [2026-11-27T13:11:25.395345+00:00] [AWAIT_APPROVAL] STAGE_3 ➔ AWAITING_APPROVAL (25% (next: 100%)) | Soak time completed for STAGE_3 (25.0%). Ready for final stage (100%), but requires human approval.
+  [2026-11-27T13:11:27.402501+00:00 .. 2026-11-27T13:12:24.794209+00:00] [HOLD (x19)] AWAITING_APPROVAL ➔ AWAITING_APPROVAL (25% (next: 100%)) | All guardrails healthy. Awaiting explicit human approval for final promotion.
+========================================================================
+
+==> Cleaning up Guardian and Simulator background processes...
+✔ Background processes stopped.

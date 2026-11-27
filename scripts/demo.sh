@@ -29,12 +29,30 @@ else
     echo "⏱️ Production Mode: DEMO_FORCE_RECALC=0 (uses public API POST /results/refresh/ with 5-minute cooldown)"
 fi
 
+# Require Python 3.11 or 3.12 (matches pyproject.toml and CI matrix)
+PYTHON_BIN=""
+for candidate in python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        if "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+            PYTHON_BIN="$(command -v "$candidate")"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    FOUND_VER="$(python3 --version 2>&1 || echo 'not found')"
+    echo "❌ Python 3.11 or 3.12 is required (found: ${FOUND_VER}). Please install Python 3.11 or 3.12 and retry." >&2
+    exit 1
+fi
+echo "🐍 Using Python: $($PYTHON_BIN --version) ($PYTHON_BIN)"
+
 # Ensure Python virtual environment and dependencies are present
-if ! python3 -c "import fastapi, uvicorn, requests, yaml, pydantic, prometheus_client" 2>/dev/null; then
+if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, requests, yaml, pydantic, prometheus_client" 2>/dev/null; then
     echo "==> Python dependencies not found in active environment."
     if [ ! -d ".venv" ]; then
         echo "==> Bootstrapping clean virtual environment in .venv..."
-        python3 -m venv .venv
+        "$PYTHON_BIN" -m venv .venv
     fi
     echo "==> Activating .venv and installing dependencies..."
     source .venv/bin/activate

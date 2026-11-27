@@ -387,16 +387,32 @@ def setup_via_admin_api(
             },
         },
     )
-    exp_res.raise_for_status()
-    exp_data = exp_res.json()
-    exp_id = exp_data["id"]
-    print(f"  ✔ Created experiment '{exp_data['name']}' via Admin API (ID={exp_id})")
+    if exp_res.status_code == 409:
+        existing_exps_resp = requests.get(f"{api_url}/environments/{env_key}/experiments/", headers=headers)
+        existing_exps_resp.raise_for_status()
+        existing_exps = existing_exps_resp.json().get("results", [])
+        exp_data = next(
+            (e for e in existing_exps if e.get("feature") == exp_feat["id"]),
+            existing_exps[0] if existing_exps else None,
+        )
+        if not exp_data:
+            exp_res.raise_for_status()
+        exp_id = exp_data["id"]
+        print(f"  ✔ Reused existing experiment '{exp_data.get('name', exp_id)}' via Admin API (ID={exp_id}, 409 idempotent)")
+    else:
+        exp_res.raise_for_status()
+        exp_data = exp_res.json()
+        exp_id = exp_data["id"]
+        print(f"  ✔ Created experiment '{exp_data['name']}' via Admin API (ID={exp_id})")
 
-    # 6. Start Experiment
-    start_res = requests.post(f"{api_url}/environments/{env_key}/experiments/{exp_id}/start/", headers=headers)
-    start_res.raise_for_status()
-    started_data = start_res.json()
-    print(f"  ✔ Started experiment via Admin API (status={started_data.get('status')})")
+    # 6. Start Experiment (idempotent if already running)
+    if exp_data.get("status") != "running":
+        start_res = requests.post(f"{api_url}/environments/{env_key}/experiments/{exp_id}/start/", headers=headers)
+        start_res.raise_for_status()
+        started_data = start_res.json()
+        print(f"  ✔ Started experiment via Admin API (status={started_data.get('status')})")
+    else:
+        print(f"  ✔ Experiment ID={exp_id} already running")
 
     # 7. Configure base environment feature state to 50% allocation on variation for SRM expected shares
     fs_resp = requests.get(f"{api_url}/features/featurestates/?environment={env_id}&feature={exp_feat['id']}", headers=headers)

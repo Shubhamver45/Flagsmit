@@ -7,7 +7,7 @@ name = "flagsmith-guardian"
 version = "0.1.0"
 description = "Autonomous, metric-guarded phased rollout and automated rollback controller for Flagsmith"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",

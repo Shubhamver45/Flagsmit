@@ -10,7 +10,7 @@ import statistics
 import sys
 from typing import List, Tuple
 
-def parse_run_logs(pattern: str = "docs/runs/demo-run-{i}.log", num_runs: int = 5) -> Tuple[List[str], List[float], List[float]]:
+def parse_run_logs(pattern: str = "docs/runs/demo-run-{i}.log", num_runs: int = 6) -> Tuple[List[str], List[float], List[float]]:
     files_read = []
     drift_times: List[float] = []
     rollback_times: List[float] = []
@@ -56,10 +56,15 @@ def main():
     d_min, d_med, d_max = min(drift_times), statistics.median(drift_times), max(drift_times)
     r_min, r_med, r_max = min(rollback_times), statistics.median(rollback_times), max(rollback_times)
 
-    header = "| Metric | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Min | Median | Max | Proved In |"
-    sep = "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |"
-    row_drift = f"| **Drift Detection Latency** | {drift_times[0]:.2f}s | {drift_times[1]:.2f}s | {drift_times[2]:.2f}s | {drift_times[3]:.2f}s | {drift_times[4]:.2f}s | **{d_min:.2f}s** | **{d_med:.2f}s** | **{d_max:.2f}s** | `demo-run-*.log`, `tests/test_webhooks_drift.py` |"
-    row_rollback = f"| **Automated Rollback Time** | {rollback_times[0]:.2f}s | {rollback_times[1]:.2f}s | {rollback_times[2]:.2f}s | {rollback_times[3]:.2f}s | {rollback_times[4]:.2f}s | **{r_min:.2f}s** | **{r_med:.2f}s** | **{r_max:.2f}s** | `demo-run-*.log`, `tests/test_guardian_engine.py` |"
+    run_cols = " | ".join(f"Run {i}" for i in range(1, len(files) + 1))
+    run_seps = " | ".join(":---:" for _ in files)
+    drift_vals = " | ".join(f"{t:.2f}s" for t in drift_times)
+    rb_vals = " | ".join(f"{t:.2f}s" for t in rollback_times)
+
+    header = f"| Metric | {run_cols} | Min | Median | Max | Proved In |"
+    sep = f"| :--- | {run_seps} | :---: | :---: | :---: | :--- |"
+    row_drift = f"| **Drift Detection Latency** | {drift_vals} | **{d_min:.2f}s** | **{d_med:.2f}s** | **{d_max:.2f}s** | `docs/runs/demo-run-*.log`, `tests/test_webhooks_drift.py` |"
+    row_rollback = f"| **Automated Rollback Time** | {rb_vals} | **{r_min:.2f}s** | **{r_med:.2f}s** | **{r_max:.2f}s** | `docs/runs/demo-run-*.log`, `tests/test_guardian_engine.py` |"
 
     print(header)
     print(sep)

@@ -199,6 +199,35 @@ def check_cli_commands(readme_content: str) -> bool:
 
     return all_ok
 
+def check_benchmark_numbers(readme_content: str) -> bool:
+    print("\n==> Checking README benchmark numbers against docs/runs/demo-run-*.log...")
+    import statistics
+    from scripts.measure_runs import parse_run_logs
+
+    files, drift_times, rollback_times = parse_run_logs()
+    d_min, d_med, d_max = min(drift_times), statistics.median(drift_times), max(drift_times)
+    r_min, r_med, r_max = min(rollback_times), statistics.median(rollback_times), max(rollback_times)
+
+    expected_drift = f"**{d_min:.2f}s** | **{d_med:.2f}s** | **{d_max:.2f}s**"
+    expected_rb = f"**{r_min:.2f}s** | **{r_med:.2f}s** | **{r_max:.2f}s**"
+    expected_drift_range = f"{d_min:.2f}–{d_max:.2f}s"
+    expected_rb_range = f"{r_min:.2f}–{r_max:.2f}s"
+
+    all_ok = True
+    for label, needle in [
+        ("Drift Min/Median/Max", expected_drift),
+        ("Rollback Min/Median/Max", expected_rb),
+        ("Drift inline range", expected_drift_range),
+        ("Rollback inline range", expected_rb_range),
+    ]:
+        if needle in readme_content:
+            print(f"  ✔ {label} matches logs ({len(files)} runs): {needle}")
+        else:
+            print(f"  ❌ {label} mismatch! Expected '{needle}' from {len(files)} logs in README.md")
+            all_ok = False
+    return all_ok
+
+
 def main():
     readme_path = ROOT_DIR / "README.md"
     if not readme_path.exists():
@@ -211,9 +240,10 @@ def main():
     ok2 = check_yaml_blocks(content)
     ok3 = check_env_vars(content)
     ok4 = check_cli_commands(content)
+    ok5 = check_benchmark_numbers(content)
 
     print("\n" + "="*50)
-    if ok1 and ok2 and ok3 and ok4:
+    if ok1 and ok2 and ok3 and ok4 and ok5:
         print("🎉 ALL README CLAIMS VERIFIED SUCCESSFULLY!")
         sys.exit(0)
     else:

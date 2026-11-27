@@ -243,3 +243,64 @@ def test_selective_cleanup_ownership_rules():
         if m.get("name") == "Checkout Completed" and (m.get("definition") or {}).get("event") == "checkout_completed"
     ]
     assert deleted_metrics == [10]
+
+
+def test_setup_flagsmith_409_reuses_existing_experiment(monkeypatch, tmp_path):
+    """Verify setup_via_admin_api reuses an existing experiment on 409 Conflict instead of failing."""
+    from unittest.mock import patch
+    from scripts import setup_flagsmith
+
+    class FakeResp:
+        def __init__(self, status_code, json_data):
+            self.status_code = status_code
+            self._json = json_data
+
+        def json(self):
+            return self._json
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.exceptions.HTTPError(f"{self.status_code} Error", response=self)
+
+    def fake_get(url, headers=None, **kwargs):
+        if url.endswith("/projects/1/features/"):
+            return FakeResp(200, {"results": [
+                {"id": 1, "name": "new_checkout", "type": "MULTIVARIATE"},
+                {"id": 2, "name": "checkout_experiment", "type": "MULTIVARIATE", "multivariate_options": [{"id": 99}]},
+            ]})
+        if url.endswith("/environments/env-k/experiments/"):
+            return FakeResp(200, {"results": [
+                {"id": 77, "feature": 2, "name": "Existing Demo Exp", "status": "running"}
+            ]})
+        if url.endswith("/environments/env-k/experiment-metrics/"):
+            return FakeResp(200, {"results": []})
+        if "/features/featurestates/" in url or "/webhooks/" in url:
+            return FakeResp(200, {"results": []})
+        return FakeResp(200, {})
+
+    def fake_post(url, headers=None, json=None, **kwargs):
+        if url.endswith("/auth/login/"):
+            return FakeResp(200, {"key": "tok"})
+        if url.endswith("/experiment-metrics/"):
+            return FakeResp(201, {"id": 5, "aggregation": "occurrence"})
+        if url.endswith("/experiments/"):
+            return FakeResp(409, {"detail": "Experiment already exists"})
+        if url.endswith("/webhooks/"):
+            return FakeResp(201, {"id": 1})
+        return FakeResp(200, {})
+
+    def fake_patch(url, headers=None, json=None, **kwargs):
+        return FakeResp(200, {})
+
+    with patch.object(setup_flagsmith.requests, "get", side_effect=fake_get), \
+         patch.object(setup_flagsmith.requests, "post", side_effect=fake_post), \
+         patch.object(setup_flagsmith.requests, "patch", side_effect=fake_patch):
+        setup_flagsmith.setup_via_admin_api(
+            api_url="http://localhost:8000/api/v1",
+            admin_api_key="master-key",
+            project_id=1,
+            env_id=1,
+            env_key="env-k",
+            admin_email="admin@example.com",
+            admin_password="pw",
+        )

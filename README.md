@@ -2,7 +2,7 @@
 > **Automated Guarded Rollouts and Blast-Radius Containment for Self-Hosted Flagsmith**  
 > *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*
 
-[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green.svg)](https://fastapi.tiangolo.com/)
 [![Flagsmith](https://img.shields.io/badge/Flagsmith-Self--Hosted-purple.svg)](https://flagsmith.com/)
 [![CI](https://github.com/shubhamver45/flagsmith-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/shubhamver45/flagsmith-guardian/actions/workflows/ci.yml)
@@ -12,16 +12,16 @@
 
 ## 1. Problem & Who It's For
 
-Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Teams running self-hosted feature flags often have to build custom glue code for automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates. **Guardian** is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.7–6.0s upon threshold breaches, and detecting out-of-band drift in about 6–10s.
+Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Teams running self-hosted feature flags often have to build custom glue code for automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates. **Guardian** is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.70–7.30s upon threshold breaches, and detecting out-of-band drift in 5.96–8.89s (measured on a laptop, simulated traffic).
 
 ---
 
 ## 2. What Guardian Does
 
 * **Automated Progressive Staging & Operator Pause/Resume**: Progresses feature flag allocations through configurable rollout stages (e.g., 1% ➔ 5% ➔ 25% ➔ 100%) via Flagsmith's Admin API, with live `PAUSED` / `resume()` operator controls (`POST /pause`, `POST /resume`).
-* **Rapid Blast-Radius Containment & Incident Intelligence**: Continuously queries Prometheus PromQL metrics (e.g., HTTP 5xx error rate, p99 latency), triggers automated rollbacks to 0.0% in 3.7–6.0s when thresholds breach, and persists structured incident records with human-readable root-cause explanations (`GET /incidents`).
+* **Rapid Blast-Radius Containment & Incident Intelligence**: Continuously queries Prometheus PromQL metrics (e.g., HTTP 5xx error rate, p99 latency), triggers automated rollbacks to 0.0% in 3.70–7.30s (measured on a laptop, simulated traffic) when thresholds breach, and persists structured incident records with human-readable root-cause explanations (`GET /incidents`).
 * **Experimentation-Driven Human Gating**: Integrates directly with Flagsmith Experimentation to gate final 100% promotion behind Bayesian statistical evidence (chance-to-be-worse, positive credible intervals) and chi-squared Sample Ratio Mismatch (SRM) checks.
-* **Real-Time Drift Detection & Flagsmith Discovery**: Listens for Flagsmith environment webhooks with constant-time HMAC-SHA256 signature verification, runs background polling to catch unauthorized manual flag changes in about 6–10s, and exposes `/flagsmith/projects`, `/flagsmith/environments`, and `/flagsmith/features` discovery APIs.
+* **Real-Time Drift Detection & Flagsmith Discovery**: Listens for Flagsmith environment webhooks with constant-time HMAC-SHA256 signature verification, runs background polling to catch unauthorized manual flag changes in 5.96–8.89s (measured on a laptop, simulated traffic), and exposes `/flagsmith/projects`, `/flagsmith/environments`, and `/flagsmith/features` discovery APIs.
 * **Crash-Resilient State Persistence**: Backed by a transactional SQLite engine that survives restarts mid-rollout, reconciles stored state against Flagsmith on boot, and maintains an immutable audit trail of every promotion, pause, drift event, incident, and rollback.
 
 ---
@@ -45,7 +45,7 @@ Guardian relies directly on Flagsmith's core architecture across all critical pa
 
 ### Prerequisites
 - **Docker & Docker Compose** (Compose v2+ required for local stack)
-- **Python 3.12** (for running Guardian directly on host):
+- **Python 3.11 or 3.12** (for running Guardian directly on host):
   ```bash
   python3.12 -m venv .venv
   source .venv/bin/activate
@@ -75,7 +75,7 @@ cd flagsmith-guardian
 | Experiment Gate Blocked (SRM Anomaly) | Automated Rollback to 0.0% on Breach |
 | :---: | :---: |
 | [![Approval Blocked](docs/img/approval_blocked.png)](docs/img/approval_blocked.png) | [![Automated Rollback](docs/img/rollback.png)](docs/img/rollback.png) |
-| *Promotion strictly blocked when traffic assignment corrupts (p < 0.001)* | *Automated rollback to 0.0% in 3.7–6.0s when error rate exceeds 5.0% threshold* |
+| *Promotion strictly blocked when traffic assignment corrupts (p < 0.001)* | *Automated rollback to 0.0% in 3.70–7.30s when error rate exceeds 5.0% threshold* |
 
 ### What `demo.sh` Runs
 1. **Infrastructure Spin-Up**: Launches self-hosted Flagsmith, PostgreSQL, Task Processor, Prometheus, and the Demo Checkout App in Docker.
@@ -83,7 +83,7 @@ cd flagsmith-guardian
 3. **Phase 1: Progressive Rollout & Mid-Rollout Drift Detection**: Advances traffic from 1% ➔ 5% ➔ 25%. Injects an out-of-band drift change via a secondary operator key (`ops-engineer`) and verifies Guardian catches drift via webhook and pauses rollout.
 4. **Phase 2: Flagsmith Experimentation Gating & Operator Promotion**: Evaluates Flagsmith Bayesian experimentation statistics for `checkout_experiment`. Verifies positive conversion lift and chance-to-be-worse within bounds, enabling operator sign-off to 100%.
 5. **Phase 3: Corrupted Traffic / Sample Ratio Mismatch (SRM) Detection**: Injects synthetic traffic imbalance into variation exposure. Flagsmith computes a chi-squared $p < 0.001$; Guardian detects the SRM warning and strictly blocks human promotion.
-6. **Phase 4: Fault Injection (Failure Spike) & Automated Rollback**: Injects a 30% payment failure rate. Prometheus scrapes errors; Guardian detects threshold breach and executes an automated rollback to 0.0% in 3.7–6.0s.
+6. **Phase 4: Fault Injection (Failure Spike) & Automated Rollback**: Injects a 30% payment failure rate. Prometheus scrapes errors; Guardian detects threshold breach and executes an automated rollback to 0.0% in 3.70–7.30s (measured on a laptop, simulated traffic).
 
 > [!NOTE]
 > **Demo Execution Shortcuts & Sandbox Architecture**:
@@ -293,15 +293,15 @@ For managing multiple feature rollouts simultaneously:
 
 ## 8. Measured Performance Benchmarks
 
-Across five consecutive end-to-end demo runs ([demo-run-1.log](docs/runs/demo-run-1.log), [demo-run-2.log](docs/runs/demo-run-2.log), [demo-run-3.log](docs/runs/demo-run-3.log), [demo-run-4.log](docs/runs/demo-run-4.log), [demo-run-5.log](docs/runs/demo-run-5.log)) executed against self-hosted Flagsmith in Docker, Guardian's performance metrics were mechanically measured as follows:
+Across six consecutive end-to-end demo runs ([demo-run-1.log](docs/runs/demo-run-1.log), [demo-run-2.log](docs/runs/demo-run-2.log), [demo-run-3.log](docs/runs/demo-run-3.log), [demo-run-4.log](docs/runs/demo-run-4.log), [demo-run-5.log](docs/runs/demo-run-5.log), [demo-run-6.log](docs/runs/demo-run-6.log)) executed against self-hosted Flagsmith in Docker (measured on a laptop, simulated traffic), Guardian's performance metrics were mechanically measured as follows:
 
-| Metric | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Min | Median | Max | Proved In |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Drift Detection Latency** | 5.96s | 6.83s | 7.87s | 8.29s | 7.74s | **5.96s** | **7.74s** | **8.29s** | `docs/runs/demo-run-*.log`, `tests/test_webhooks_drift.py` |
-| **Automated Rollback Time** | 4.80s | 6.00s | 4.00s | 3.70s | 5.40s | **3.70s** | **4.80s** | **6.00s** | `docs/runs/demo-run-*.log`, `tests/test_guardian_engine.py` |
+| Metric | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Run 6 | Min | Median | Max | Proved In |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Drift Detection Latency** | 5.96s | 6.83s | 7.87s | 8.29s | 7.74s | 8.89s | **5.96s** | **7.80s** | **8.89s** | `docs/runs/demo-run-*.log`, `tests/test_webhooks_drift.py` |
+| **Automated Rollback Time** | 4.80s | 6.00s | 4.00s | 3.70s | 5.40s | 7.30s | **3.70s** | **5.10s** | **7.30s** | `docs/runs/demo-run-*.log`, `tests/test_guardian_engine.py` |
 
 > [!NOTE]
-> **Drift Latency Analysis**: Drift is detected asynchronously via webhooks. The measured latency range (5.96s – 8.29s) represents the full end-to-end distributed transaction: operator API write ➔ Postgres insert ➔ asynchronous `flagsmith-task-processor` queue polling ➔ HMAC-signed webhook delivery across the Docker bridge ➔ Guardian signature verification and SQLite ledger comparison.
+> **Drift Latency Analysis**: Drift is detected asynchronously via webhooks. The measured latency range (5.96s – 8.89s, measured on a laptop, simulated traffic) represents the full end-to-end distributed transaction: operator API write ➔ Postgres insert ➔ asynchronous `flagsmith-task-processor` queue polling ➔ HMAC-signed webhook delivery across the Docker bridge ➔ Guardian signature verification and SQLite ledger comparison.
 
 ---
 
