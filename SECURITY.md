@@ -20,7 +20,7 @@ When `GUARDIAN_ENV=production` is set, Guardian enforces strict defense-in-depth
 - **Fail-Closed Webhook Ingress**: The webhook endpoint (`POST /webhooks/flagsmith`) strictly requires `FLAGSMITH_WEBHOOK_SECRET` to be configured and valid `X-Flagsmith-Signature` HMAC headers. Webhooks without a configured secret are rejected with `401 Unauthorized`.
 - **Private Loopback Binding**: Defaults to `127.0.0.1` when run directly. In Docker, expose only to localhost via `-p 127.0.0.1:8080:8080` or an internal ingress reverse proxy.
 - **Rate Limiting & Size Caps**: Write endpoints (`/approve`, `/rollback`, `/reset`, `/tick`, `/webhooks/flagsmith`) enforce sliding-window rate limiting (default 60 req/min) and request body size limits (max 64 KB).
-- **Credentials in URLs Forbidden**: Passing tokens via query parameters (`?token=...`, `?key=...`) is strictly prohibited and returns `400 Bad Request`. Pass credentials only via headers (`Authorization: Bearer <token>` or `X-Guardian-Token`).
+- **Credentials in URLs Forbidden**: Passing tokens via query parameters (`?token=...`, `?key=...`) is strictly prohibited and returns `401 Unauthorized`. Pass credentials only via headers (`Authorization: Bearer <token>` or `X-Guardian-Token`).
 - **Non-Root Container**: The official Docker image runs as unprivileged user `guardian` (UID 10001) with a read-only root filesystem and dedicated writable volume at `/app/data` for SQLite.
 
 ### 2. Demo-Only Architecture and Endpoints

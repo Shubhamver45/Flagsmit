@@ -63,3 +63,4 @@ clickhouse_data/
 .idea/
 .vscode/
 *.log
+!docs/runs/*.log

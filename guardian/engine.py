@@ -1039,11 +1039,13 @@ class GuardianEngine:
             else:
                 evals = []
             guardrail_reports = []
+            unit_by_name = {g.name: getattr(g, "unit", "%") for g in rc.guardrails}
             if evals:
                 for ev in evals:
                     guardrail_reports.append({
                         "name": ev.name,
                         "value": ev.value,
+                        "unit": unit_by_name.get(ev.name, "ms" if "latency" in ev.name.lower() else "%"),
                         "sample_size": ev.sample_size,
                         "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),
                         "is_breached": getattr(ev, "is_breached", False),
@@ -1056,6 +1058,7 @@ class GuardianEngine:
                         "name": g.name,
                         "threshold": g.threshold,
                         "comparison": g.comparison,
+                        "unit": getattr(g, "unit", "%"),
                         "metric_source": g.metric_source,
                         "status": "WAITING_FIRST_TICK",
                         "value": None,

@@ -108,3 +108,96 @@ def test_pause_resume_and_incidents_endpoints(tmp_path):
     assert "api_key" not in env_resp["environments"][0]
     assert client.get("/flagsmith/features", headers=headers).json()["count"] == 1
     storage.close()
+
+
+def test_ineligible_approval_banner_and_guardrail_units(tmp_path):
+    storage = GuardianStorage(db_path=tmp_path / "banner_units.db")
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1.0, 25.0, 100.0],
+        soak_time_seconds=0,
+        require_approval_before_final=True,
+        guardrails=[
+            Guardrail(
+                name="p95_latency_ms",
+                metric_source="prometheus",
+                query="histogram_quantile(0.95, latency)",
+                threshold=250.0,
+                comparison=">",
+                unit="ms",
+            ),
+            Guardrail(
+                name="checkout_ab_chance_to_be_worse",
+                metric_source="flagsmith_experiment",
+                threshold=10.0,
+                comparison=">",
+            ),
+        ],
+    )
+
+    from guardian.metrics.base import MetricEvaluation, MetricStatus
+    evals = [
+        MetricEvaluation(
+            name="p95_latency_ms",
+            value=120.5,
+            sample_size=200,
+            status=MetricStatus.HEALTHY,
+            is_breached=False,
+            reason="Latency healthy",
+        ),
+        MetricEvaluation(
+            name="checkout_ab_chance_to_be_worse",
+            value=4.0,
+            sample_size=120,
+            status=MetricStatus.HEALTHY,
+            is_breached=False,
+            reason="Experiment healthy",
+            details={
+                "as_of": "2026-11-27T00:00:00Z",
+                "srm_warning": True,
+                "srm_p_value": 0.0001,
+                "chance_to_be_worse": 4.0,
+                "chance_to_win": 96.0,
+            },
+        ),
+    ]
+
+    class FakeProvider:
+        def evaluate_all(self, guardrails):
+            return evals
+
+    engine = GuardianEngine(
+        config=cfg,
+        flagsmith_client=mock_client,
+        metric_provider=FakeProvider(),
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+    # Advance to AWAITING_APPROVAL
+    engine.tick()  # STAGE_1
+    engine.tick()  # STAGE_2 (25%)
+    engine.tick()  # AWAITING_APPROVAL
+
+    app = create_app(engine=engine, api_token="tok")
+    client = TestClient(app)
+
+    status_data = client.get("/status").json()
+    assert status_data["state"] == "AWAITING_APPROVAL"
+    assert status_data["is_eligible_for_approval"] is False
+    assert "Sample Ratio Mismatch" in status_data["approval_block_reason"]
+
+    # Verify latency guardrail carries 'ms' unit, not '%'
+    lat_g = next(g for g in status_data["guardrails"] if g["name"] == "p95_latency_ms")
+    assert lat_g["unit"] == "ms"
+
+    # Verify dashboard HTML/JS disables banner approve button and updates banner text on !isEligible
+    html = client.get("/").text
+    assert 'id="awaiting-banner-text"' in html
+    assert 'id="btn-banner-approve"' in html
+    assert "bannerApproveBtn.disabled = !isAwaiting || !isEligible;" in html
+    assert "<strong>Approval Blocked:</strong>" in html
+    assert "g.unit !== undefined" in html
+    storage.close()

@@ -1,0 +1,501 @@
+========================================================================
+🛡️  GUARDIAN END-TO-END DEMO ORCHESTRATOR
+========================================================================
+⚡ Quickstart Mode: DEMO_FORCE_RECALC=1 active (demo shortcut: immediate recalculation for <2-minute run)
+==> Step 1: Starting Flagsmith, PostgreSQL, Task Processor, and Prometheus...
+ Container flagsmith_demo_app Running 
+ Container flagsmith_prometheus Running 
+ Container flagsmith_postgres Running 
+ Container flagsmith-flagsmith-1 Running 
+ Container flagsmith-flagsmith-task-processor-1 Running 
+ Container flagsmith_postgres Waiting 
+ Container flagsmith_postgres Healthy 
+ Container flagsmith-migrate-db-1 Starting 
+ Container flagsmith-migrate-db-1 Started 
+ Container flagsmith-migrate-db-1 Waiting 
+ Container flagsmith-migrate-db-1 Waiting 
+ Container flagsmith-migrate-db-1 Exited 
+ Container flagsmith-migrate-db-1 Exited 
+ Container flagsmith-flagsmith-1 Waiting 
+ Container flagsmith-flagsmith-1 Healthy 
+==> Waiting for Flagsmith API to become ready...
+  ✔ Flagsmith API is ready (http://localhost:8000/api/v1/)
+  ✔ Prometheus is ready (http://localhost:9090/-/healthy)
+==> Step 2: Auto-provisioning Flagsmith (Org, Project, Environment, Flag, Master Key)...
+ flagsmith-flagsmith-1 Copying /Users/shubham/Desktop/Flagsmit/scripts/setup_flagsmith.py to flagsmith-flagsmith-1:/app/setup_flagsmith.py
+ flagsmith-flagsmith-1 Copied /Users/shubham/Desktop/Flagsmit/scripts/setup_flagsmith.py to flagsmith-flagsmith-1:/app/setup_flagsmith.py
+==> Copying setup script into Flagsmith container...
+==> Executing core DB setup inside Flagsmith Django shell (admin user, org, project, env, master key)...
+2026-11-25T11:50:14.812732Z [info     ] Invoking Django                [common.core.main] positional_args=()
+156 objects imported automatically (use -v 2 for details).
+
+User: admin@example.com (existing user updated with ADMIN_PASSWORD from .env)
+Organisation: Guardian Org [ID=1]
+Project: Guardian Project [ID=1]
+Environment: Development [ID=1, Key=YyQWsg546ChUMz99LGux5s]
+Admin API Key Prefix: NGffTWzA
+Admin API Key: written to .env
+Ops API Key Prefix: U4yoQBn3
+Ops API Key: written to .env
+Verifying Flagsmith Database Warehouse connection for environment 'Development'...
+Warehouse Connection Status: connected (detail: None)
+
+=== SETUP SUMMARY (CORE PRIMITIVES) ===
+Dashboard URL: http://localhost:8000
+Admin Login: admin@example.com (password: written to .env)
+Organisation: Guardian Org (ID: 1)
+Project: Guardian Project (ID: 1)
+Environment: Development (ID: 1)
+Environment Client Key: YyQWsg546ChUMz99LGux5s
+Admin API Key: written to .env
+Guardian API Token: written to .env
+Warehouse Status: connected
+✔ Admin API key and password written to /Users/shubham/Desktop/Flagsmit/.env
+==> Configuring Flags, Metric, and Experiment via Public Admin API...
+  ✔ Verified Admin login via POST /api/v1/auth/login/ (login OK)
+  ✔ Multivariate feature 'new_checkout' already exists via Admin API (ID=1)
+  ✔ Reset environment feature state for 'new_checkout' to 0.0% (disabled)
+  ✔ Multivariate feature 'checkout_experiment' already exists via Admin API (ID=2)
+  ✔ Reset existing experiment 2 via Admin API
+  ✔ Reset existing metric 2 via Admin API
+  ✔ Created metric 'Checkout Completed' via Admin API (ID=3, aggregation='occurrence')
+    ℹ Note on aggregation='occurrence': tracks per-identity conversion (each user converts at most once in occurrence calculation)
+  ✔ Created experiment 'Checkout A/B Experiment' via Admin API (ID=3)
+  ✔ Started experiment via Admin API (status=running)
+  ✔ Configured 50/50 variant allocation on environment feature state via Admin API
+  ✔ Verified Guardian environment webhook via Admin API (http://host.docker.internal:8080/webhooks/flagsmith, ID=1)
+==> Step 3: Starting Demo Checkout App container...
+ Image flagsmith-demo-app Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 536B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 295B done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 0.1s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 63B done
+#5 DONE 0.0s
+
+#6 [1/5] FROM docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+#6 resolve docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b 0.0s done
+#6 DONE 0.0s
+
+#7 [4/5] RUN pip install --no-cache-dir -r requirements.txt
+#7 CACHED
+
+#8 [2/5] WORKDIR /app
+#8 CACHED
+
+#9 [3/5] COPY requirements.txt .
+#9 CACHED
+
+#10 [5/5] COPY app.py .
+#10 CACHED
+
+#11 exporting to image
+#11 exporting layers done
+#11 exporting manifest sha256:4cacc5f5319bfbb3d8f22bb861e74d9c0142d767fbe4cc5a0653b64b34b094b2 done
+#11 exporting config sha256:1337e35f566cf93b1c6bceacff774a24e96fac9b5508bed3fd365721c615de14 done
+#11 exporting attestation manifest sha256:677b6925ebda6e085bcb475c6309e596171d500edca50d24714736d87cc299b0 0.0s done
+#11 exporting manifest list sha256:2f38b1c7b043c36f70197d44134ef74ba23425de8571e979b24897a8b080327d
+#11 exporting manifest list sha256:2f38b1c7b043c36f70197d44134ef74ba23425de8571e979b24897a8b080327d 0.0s done
+#11 naming to docker.io/library/flagsmith-demo-app:latest done
+#11 unpacking to docker.io/library/flagsmith-demo-app:latest 0.0s done
+#11 DONE 0.1s
+
+#12 resolving provenance for metadata file
+#12 DONE 0.1s
+ Image flagsmith-demo-app Built 
+ Container flagsmith_postgres Running 
+ Container flagsmith-flagsmith-1 Running 
+ Container flagsmith_demo_app Running 
+ Container flagsmith_postgres Waiting 
+ Container flagsmith_postgres Healthy 
+ Container flagsmith-migrate-db-1 Starting 
+ Container flagsmith-migrate-db-1 Started 
+ Container flagsmith-migrate-db-1 Waiting 
+ Container flagsmith-migrate-db-1 Exited 
+ Container flagsmith-flagsmith-1 Waiting 
+ Container flagsmith-flagsmith-1 Healthy 
+  ✔ Demo Checkout App is ready (http://localhost:5001/health)
+==> Step 4: Launching Guardian daemon on http://localhost:8080 (DEMO_MODE=1, soak: 3s)...
+.  ✔ Guardian Status API is ready (http://localhost:8080/health)
+==> Step 5: Starting initial traffic simulator (15 distinct user identities for Phase 1 & 2)...
+
+========================================================================
+🎉 ALL SYSTEMS READY — EXECUTING DEMO WORKFLOW
+========================================================================
+  • Guardian Live Dashboard : http://localhost:8080/
+  • Flagsmith UI            : http://localhost:8000/ (admin@example.com / see README)
+  • Demo Checkout App       : http://localhost:5001/
+  • Prometheus Graph        : http://localhost:9090/
+========================================================================
+==> Verifying Flagsmith Admin Authentication via POST /api/v1/auth/login/:
+  login OK
+==> Verifying Guardian write endpoint authentication in demo mode (unauthenticated POST /approve must return 401):
+  ✔ Unauthenticated POST /approve returned HTTP 401 Unauthorized as expected
+
+--- Phase 1: Progressive Rollout & Mid-Rollout Drift Detection ---
+Flag 'new_checkout' is advancing through stages under healthy error rate (< 5.0%)...
+  ⏳ Waiting for Guardian state 'STAGE_1'... [OK: STAGE_1 (1.0%)]
+
+--- Mid-Rollout Scenario: Out-of-Band State Change & Real-Time Drift Detection ---
+Simulating external operator ('ops-engineer') altering 'new_checkout' to 50% via Admin API...
+  ✔ External operator (ops-engineer) changed flag to 50% in Flagsmith (triggering real-time webhook to Guardian)
+Verifying Guardian detects drift, pauses rollout, and surfaces drift alert:
+⚠️  [DRIFT DETECTED via Webhook] Flag 'new_checkout' modified out-of-band by ops-engineer: actual 50.0% differs from expected 1.0% (STAGE_1). Holding rollout.
+
+========================================================================
+⚠️  DRIFT WARNING DETECTED (measured latency: 7.87s)
+  • Flag       : new_checkout
+  • Detection  : webhook
+  • Modified By: ops-engineer
+  • Actual %   : 50.0%
+  • Expected % : 1.0% (STAGE_1)
+  • Status     : Rollout Execution HELD
+========================================================================
+
+==> Security Test: Verifying HMAC-SHA256 signature enforcement (POST /webhooks/flagsmith):
+Testing with tampered / invalid signature (expected: HTTP 401 Unauthorized):
+HTTP/1.1 401 Unauthorized
+date: Wed, 25 Nov 2026 11:50:44 GMT
+server: uvicorn
+content-length: 42
+content-type: application/json
+
+{"detail":"Invalid X-Flagsmith-Signature"}
+Resolving drift: Restoring flag allocation back to STAGE_1 (1.0%) in Flagsmith:
+  ✔ Restored flag allocation to 1% in Flagsmith (drift auto-resolved)
+Advancing through remaining stages to Awaiting Approval...
+  ⏳ Waiting for Guardian state 'AWAITING_APPROVAL'............ [OK: AWAITING_APPROVAL (25.0%)]
+
+--- Phase 2 (Scenario 1): Approval Gate Blocks on Insufficient Data ---
+Rollout reached 25% and is holding before 100% promotion.
+Flagsmith is actively collecting events (<50 identities/arm or <5 conversions).
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-25T11:51:17.991808Z (demo shortcut)
+  • Chance to be Worse: n/a (collecting data)
+  • SRM Status        : Healthy (p-value: n/a (collecting data))
+  • SRM p-value       : n/a (collecting data)
+  • Collecting Data   : True
+  • Approval Gate     : BLOCKED: Approval blocked: Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Statistical inference not yet available.
+Attempting operator approval while data is still collecting:
+Error (400): Approval blocked: Flagsmith is still collecting data (under 50 identities per arm or under 5 conversions). Statistical inference not yet available.
+==> Sending approval to Guardian at http://localhost:8080...
+✔ As expected, operator approval is strictly blocked when Flagsmith is still collecting data.
+
+--- Phase 2 (Scenario 2): Approval Gate Blocks on Underperforming (WORSE) Variation ---
+Setting experiment mode to 'worse' (per-identity conversion: control ~60%, variation ~35%)...
+ℹ Metric aggregation='occurrence': tracks per-identity conversion rates (each user converts at most once).
+{
+    "experiment_mode": "worse",
+    "status": "ok"
+}
+Generating traffic for worse variation to calculate statistical underperformance...
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+
+==> Raw Flagsmith Experiment Results (Variation Clearly Worse):
+{
+  "results": {
+    "as_of": "2026-11-25T11:51:48.983500Z",
+    "last_error_at": null,
+    "refresh_requested_at": "2026-11-25T11:45:49.058674Z",
+    "payload": {
+      "metrics": [
+        {
+          "variants": {
+            "control": {
+              "n": 67,
+              "sum": 49.0,
+              "sum_squares": 49.0
+            },
+            "variation": {
+              "n": 70,
+              "sum": 19.0,
+              "sum_squares": 19.0
+            }
+          },
+          "inference": {
+            "variation": {
+              "lift": -0.6288629737609329,
+              "ci_low": -0.7822552733820144,
+              "ci_high": -0.47547067413985145,
+              "chance_to_win": 4.440892098500626e-16
+            }
+          },
+          "metric_id": 3,
+          "conversions_timeseries": {
+            "points": [
+              {
+                "bucket": "2026-11-25T11:00:00+00:00",
+                "converted_identities": {
+                  "control": 49,
+                  "variation": 19
+                }
+              }
+            ],
+            "granularity": "hour"
+          }
+        }
+      ],
+      "srm_p_value": 0.7977135629736372,
+      "exposures_timeseries": {
+        "points": [
+          {
+            "bucket": "2026-11-25T11:00:00+00:00",
+            "new_identities": {
+              "control": 67,
+              "variation": 70
+            }
+          }
+        ],
+        "granularity": "hour"
+      }
+    },
+    "is_final": false
+  }
+}
+
+==> Guardian Status Check (Gate Evaluation for Worse Variation):
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-25T11:51:48.983500Z (demo shortcut)
+  • Chance to be Worse: 100.0%
+  • Chance to Win     : 0.0% (95% CI: [-0.782, -0.475])
+  • SRM Status        : Healthy (p-value: 0.7977)
+  • SRM p-value       : 0.797714
+  • Collecting Data   : False
+  • Approval Gate     : BLOCKED: Approval blocked: Bayesian chance-to-be-worse (100.0%) exceeds configured limit (10.0%).
+Attempting operator approval while variation is underperforming:
+Error (400): Approval blocked: Bayesian chance-to-be-worse (100.0%) exceeds configured limit (10.0%).
+==> Sending approval to Guardian at http://localhost:8080...
+✔ As expected, operator approval is strictly BLOCKED by Guardian when variation is worse (chance to be worse > limit 10%).
+
+--- Phase 3: Happy-Path Decisive Winner Scenario & Human Operator Promotion ---
+Setting experiment mode to 'winner' (per-identity conversion: control ~25%, variation ~75%)...
+ℹ Verifying gate clearance under require_winner: true (chance to win >= 95.0% and 95% CI low > 0.0, no SRM).
+{
+    "experiment_mode": "winner",
+    "status": "ok"
+}
+Generating traffic for winner variation demonstrating positive lift...
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+
+==> Raw Flagsmith Experiment Results (Winner Variation Inference):
+{
+  "results": {
+    "as_of": "2026-11-25T11:52:49.660986Z",
+    "last_error_at": null,
+    "refresh_requested_at": "2026-11-25T11:46:49.764679Z",
+    "payload": {
+      "metrics": [
+        {
+          "variants": {
+            "control": {
+              "n": 271,
+              "sum": 98.0,
+              "sum_squares": 98.0
+            },
+            "variation": {
+              "n": 284,
+              "sum": 178.0,
+              "sum_squares": 178.0
+            }
+          },
+          "inference": {
+            "variation": {
+              "lift": 0.7331848232250648,
+              "ci_low": 0.4173856942275188,
+              "ci_high": 1.0489839522226108,
+              "chance_to_win": 0.9999973229391692
+            }
+          },
+          "metric_id": 3,
+          "conversions_timeseries": {
+            "points": [
+              {
+                "bucket": "2026-11-25T11:00:00+00:00",
+                "converted_identities": {
+                  "control": 98,
+                  "variation": 178
+                }
+              }
+            ],
+            "granularity": "hour"
+          }
+        }
+      ],
+      "srm_p_value": 0.5810721847929581,
+      "exposures_timeseries": {
+        "points": [
+          {
+            "bucket": "2026-11-25T11:00:00+00:00",
+            "new_identities": {
+              "control": 271,
+              "variation": 284
+            }
+          }
+        ],
+        "granularity": "hour"
+      }
+    },
+    "is_final": false
+  }
+}
+
+==> Guardian Status Check (Gate Evaluation for Winner Variation):
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-25T11:52:49.660986Z (demo shortcut)
+  • Chance to be Worse: 0.0%
+  • Chance to Win     : 100.0% (95% CI: [0.417, 1.049])
+  • SRM Status        : Healthy (p-value: 0.5811)
+  • SRM p-value       : 0.581072
+  • Collecting Data   : False
+  • Approval Gate     : ELIGIBLE (Clear for 100% promotion)
+Executing operator promotion approval:
+==> Sending approval to Guardian at http://localhost:8080...
+✅ Success: Promotion approved successfully for 'new_checkout'
+State: PROMOTED | Rollout: 100.0%
+  ⏳ Waiting for Guardian state 'PROMOTED'... [OK: PROMOTED (100.0%)]
+✔ Feature flag successfully promoted to 100%!
+
+--- Phase 4: Fault Injection (Failure Spike) & Automated Rollback ---
+Injecting fault into new checkout flow via Demo App (BUG_IN_NEW_CHECKOUT=1)...
+{
+    "bug_enabled": true
+}
+Traffic simulator is now receiving ~30% payment processing errors on new_flow.
+Guardian is monitoring Prometheus PromQL guardrail: error_rate > 5.0%...
+  ⏳ Waiting for Guardian state 'ROLLED_BACK'..... [OK: ROLLED_BACK (0.0%)]
+✔ Automated rollback to 0% completed in 4.0s!
+  • Time to Rollback: 4.0s (State: ROLLED_BACK)
+  • Slack Alert     : Slack alert skipped (no webhook set in .env)
+
+--- Phase 5 (Scenario 2): SRM Anomaly Simulation & Blocked Approval Gate ---
+Attempting operator re-arm via POST /reset (strictly rejected while guardrail is breaching)...
+  ℹ Re-arm rejected as expected: Error (400): Cannot re-arm rollout: Guardrail 'new_flow_error_rate' is currently breaching (observed 10.70%). Resolve the underlying fault before re-arming: Metric value 10.70% > threshold 5.0% (BREACH)
+  ⏳ Waiting for guardrail metric to recover before re-arm succeeds.........
+✔ Rollout successfully re-armed to PENDING (guardrails healthy).
+Advancing back to AWAITING_APPROVAL stage...
+  ⏳ Waiting for Guardian state 'STAGE_1'... [OK: STAGE_1 (1.0%)]
+  ⏳ Waiting for Guardian state 'AWAITING_APPROVAL'.............. [OK: AWAITING_APPROVAL (25.0%)]
+Simulating Sample Ratio Mismatch (SRM) by dropping exposure events for variation arm...
+{
+    "simulate_srm": true
+}
+Sending skewed traffic to trigger real SRM in Flagsmith database...
+  [demo shortcut] DEMO_FORCE_RECALC=1: triggering accelerated recalculation via Flagsmith task processor...
+
+==> Raw Flagsmith Experiment Results (SRM Warning Detected):
+{
+  "results": {
+    "as_of": "2026-11-25T11:54:35.490639Z",
+    "last_error_at": null,
+    "refresh_requested_at": "2026-11-25T11:48:35.557288Z",
+    "payload": {
+      "metrics": [
+        {
+          "variants": {
+            "control": {
+              "n": 404,
+              "sum": 131.0,
+              "sum_squares": 131.0
+            },
+            "variation": {
+              "n": 284,
+              "sum": 178.0,
+              "sum_squares": 178.0
+            }
+          },
+          "inference": {
+            "variation": {
+              "lift": 0.9329104397376627,
+              "ci_low": 0.609772264645823,
+              "ci_high": 1.2560486148295025,
+              "chance_to_win": 0.9999999923640193
+            }
+          },
+          "metric_id": 3,
+          "conversions_timeseries": {
+            "points": [
+              {
+                "bucket": "2026-11-25T11:00:00+00:00",
+                "converted_identities": {
+                  "control": 131,
+                  "variation": 178
+                }
+              }
+            ],
+            "granularity": "hour"
+          }
+        }
+      ],
+      "srm_p_value": 4.763175554746928e-06,
+      "exposures_timeseries": {
+        "points": [
+          {
+            "bucket": "2026-11-25T11:00:00+00:00",
+            "new_identities": {
+              "control": 404,
+              "variation": 284
+            }
+          }
+        ],
+        "granularity": "hour"
+      }
+    },
+    "is_final": false
+  }
+}
+
+==> Guardian Verification of SRM Anomaly:
+  • Experiment Name   : Checkout A/B Experiment
+  • Source Text       : results computed by Flagsmith from events sent by the demo app, as of 2026-11-25T11:54:35.490639Z (demo shortcut)
+  • Chance to be Worse: n/a (not evaluated: SRM)
+  • SRM Status        : WARNING (Corrupt, p-value: 0.000005)
+  • SRM p-value       : 0.000005
+  • Collecting Data   : False
+  • Approval Gate     : BLOCKED: Approval blocked: Sample Ratio Mismatch (SRM) detected (p-value 0.000005 < 0.001). Traffic assignment is corrupted.
+Attempting operator approval while SRM warning is active:
+Error (400): Approval blocked: Sample Ratio Mismatch (SRM) detected (p-value 0.000005 < 0.001). Traffic assignment is corrupted.
+==> Sending approval to Guardian at http://localhost:8080...
+✔ As expected, operator approval is strictly BLOCKED by Guardian when real SRM anomaly fires.
+
+========================================================================
+🎉 DEMO RUN COMPLETED SUCCESSFULLY!
+========================================================================
+Final Rollout State: AWAITING_APPROVAL
+Final Rollout %    : 25.0%
+
+Audit Decision Trail:
+  [2026-11-25T11:50:48.354013+00:00] [ADVANCE] PENDING ➔ STAGE_1 (1%) | Rollout initiated at Stage 1 (1%).
+  [2026-11-25T11:50:50.559185+00:00] [DRIFT] STAGE_1 ➔ STAGE_1 (50.0%) | [DRIFT DETECTED via Webhook] Flag 'new_checkout' modified out-of-band by ops-engineer: actual 50.0% differs from expected 1.0% (STAGE_1).
+  [2026-11-25T11:50:51.562970+00:00] [HOLD] STAGE_1 ➔ STAGE_1 | [DRIFT WARNING] Rollout held due to state drift: Flag 'new_checkout' modified out-of-band by ops-engineer: actual 50.0% differs from expected 1.0% (STAGE_1).
+  [2026-11-25T11:50:51.591096+00:00] [RESOLVED] STAGE_1 ➔ STAGE_1 (1.0%) | [DRIFT RESOLVED via Webhook] Drift resolved via webhook: flag 'new_checkout' restored to expected 1.0% (STAGE_1).
+  [2026-11-25T11:50:58.798106+00:00] [ADVANCE] STAGE_1 ➔ STAGE_2 (5%) | Soak time satisfied and metrics healthy. Advanced to STAGE_2 (5%).
+  [2026-11-25T11:51:06.391672+00:00] [ADVANCE] STAGE_2 ➔ STAGE_3 (25%) | Soak time satisfied and metrics healthy. Advanced to STAGE_3 (25%).
+  [2026-11-25T11:51:13.732344+00:00] [AWAIT_APPROVAL] STAGE_3 ➔ AWAITING_APPROVAL (25% (next: 100%)) | Soak time completed for STAGE_3 (25.0%). Ready for final stage (100%), but requires human approval.
+  [2026-11-25T11:51:15.567840+00:00 .. 2026-11-25T11:52:53.659136+00:00] [HOLD (x48)] AWAITING_APPROVAL ➔ AWAITING_APPROVAL (25% (next: 100%)) | All guardrails healthy. Awaiting explicit human approval for final promotion.
+  [2026-11-25T11:53:00.566339+00:00] [PROMOTED] AWAITING_APPROVAL ➔ PROMOTED | Human approval granted. Promoted to final stage (100%).
+  [2026-11-25T11:53:03.274611+00:00] [HOLD] PROMOTED ➔ PROMOTED (100.0%) | Rollout fully promoted at 100%. Guardrails healthy.
+  [2026-11-25T11:53:11.456850+00:00] [ROLLBACK] PROMOTED ➔ ROLLED_BACK | Metric value 8.18% > threshold 5.0% (BREACH)
+  [2026-11-25T11:53:14.803194+00:00 .. 2026-11-25T11:53:22.396929+00:00] [HOLD (x5)] ROLLED_BACK ➔ ROLLED_BACK (0.0%) | Rollout in terminal state: ROLLED_BACK
+  [2026-11-25T11:53:24.055821+00:00] [ADVANCE] ROLLED_BACK ➔ PENDING | Rollout 'new_checkout' reset to initial PENDING by operator.
+  [2026-11-25T11:53:29.904941+00:00] [ADVANCE] PENDING ➔ STAGE_1 (1%) | Rollout initiated at Stage 1 (1%).
+  [2026-11-25T11:53:38.315396+00:00] [ADVANCE] STAGE_1 ➔ STAGE_2 (5%) | Soak time satisfied and metrics healthy. Advanced to STAGE_2 (5%).
+  [2026-11-25T11:53:45.734449+00:00] [ADVANCE] STAGE_2 ➔ STAGE_3 (25%) | Soak time satisfied and metrics healthy. Advanced to STAGE_3 (25%).
+  [2026-11-25T11:53:53.482804+00:00] [AWAIT_APPROVAL] STAGE_3 ➔ AWAITING_APPROVAL (25% (next: 100%)) | Soak time completed for STAGE_3 (25.0%). Ready for final stage (100%), but requires human approval.
+  [2026-11-25T11:53:55.284306+00:00 .. 2026-11-25T11:54:39.164202+00:00] [HOLD (x22)] AWAITING_APPROVAL ➔ AWAITING_APPROVAL (25% (next: 100%)) | All guardrails healthy. Awaiting explicit human approval for final promotion.
+========================================================================
+
+==> Cleaning up Guardian and Simulator background processes...
+✔ Background processes stopped.

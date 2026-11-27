@@ -12,7 +12,7 @@
 
 ## 1. Problem & Who It's For
 
-Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Commercial feature flagging platforms lock automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates behind expensive enterprise tiers. **Guardian** is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.7–6.0s upon threshold breaches, and detecting out-of-band drift in about 6–10s.
+Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Teams running self-hosted feature flags often have to build custom glue code for automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates. **SwitchGuard** (formerly Flagsmith Guardian) is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.7–6.0s upon threshold breaches, and detecting out-of-band drift in about 6–10s.
 
 ---
 
@@ -65,7 +65,7 @@ cd flagsmith-guardian
 ./scripts/demo.sh
 ```
 
-### Visual Walkthrough & Real Dashboard Screenshots
+### Illustrative Dashboard States (Sample Data)
 
 | Healthy Progressive Rollout (Stage 2 at 5%) | Out-of-Band Drift Alert Banner |
 | :---: | :---: |
@@ -293,12 +293,12 @@ For managing multiple feature rollouts simultaneously:
 
 ## 8. Measured Performance Benchmarks
 
-Across five consecutive end-to-end demo runs (`demo-run-1.log` through `demo-run-5.log`) executed against self-hosted Flagsmith in Docker, Guardian's performance metrics were mechanically measured as follows:
+Across five consecutive end-to-end demo runs ([demo-run-1.log](docs/runs/demo-run-1.log), [demo-run-2.log](docs/runs/demo-run-2.log), [demo-run-3.log](docs/runs/demo-run-3.log), [demo-run-4.log](docs/runs/demo-run-4.log), [demo-run-5.log](docs/runs/demo-run-5.log)) executed against self-hosted Flagsmith in Docker, SwitchGuard's performance metrics were mechanically measured as follows:
 
 | Metric | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Min | Median | Max | Proved In |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Drift Detection Latency** | 5.96s | 6.83s | 7.87s | 8.29s | 7.74s | **5.96s** | **7.74s** | **8.29s** | `demo-run-*.log`, `tests/test_webhooks_drift.py` |
-| **Automated Rollback Time** | 4.80s | 6.00s | 4.00s | 3.70s | 5.40s | **3.70s** | **4.80s** | **6.00s** | `demo-run-*.log`, `tests/test_guardian_engine.py` |
+| **Drift Detection Latency** | 5.96s | 6.83s | 7.87s | 8.29s | 7.74s | **5.96s** | **7.74s** | **8.29s** | `docs/runs/demo-run-*.log`, `tests/test_webhooks_drift.py` |
+| **Automated Rollback Time** | 4.80s | 6.00s | 4.00s | 3.70s | 5.40s | **3.70s** | **4.80s** | **6.00s** | `docs/runs/demo-run-*.log`, `tests/test_guardian_engine.py` |
 
 > [!NOTE]
 > **Drift Latency Analysis**: Drift is detected asynchronously via webhooks. The measured latency range (5.96s – 8.29s) represents the full end-to-end distributed transaction: operator API write ➔ Postgres insert ➔ asynchronous `flagsmith-task-processor` queue polling ➔ HMAC-signed webhook delivery across the Docker bridge ➔ Guardian signature verification and SQLite ledger comparison.
@@ -345,4 +345,4 @@ Factual chronological progression reconstructed from `git log --date=short`:
 ## 12. AI Tools Used
 
 This project was developed with assistance from:
-* **Google Antigravity & Gemini 2.5**: Used for code generation, test case scaffolding, architectural design reviews, and automated terminal debugging during the development cycle.
+* **Google Antigravity**: AI coding assistant used for implementation scaffolding, test suite expansion, security audit verification, and debugging during development.

@@ -10,7 +10,7 @@ import statistics
 import sys
 from typing import List, Tuple
 
-def parse_run_logs(pattern: str = "demo-run-{i}.log", num_runs: int = 5) -> Tuple[List[str], List[float], List[float]]:
+def parse_run_logs(pattern: str = "docs/runs/demo-run-{i}.log", num_runs: int = 5) -> Tuple[List[str], List[float], List[float]]:
     files_read = []
     drift_times: List[float] = []
     rollback_times: List[float] = []

@@ -31,8 +31,25 @@ def get_status():
 def run_server():
     uvicorn.run(app, host="127.0.0.1", port=8099, log_level="warning")
 
+def _resolve_chrome_binary() -> str:
+    import shutil
+    candidates = [
+        os.environ.get("CHROME_BIN"),
+        shutil.which("google-chrome"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    raise RuntimeError(
+        "No Chromium/Chrome binary found. Set CHROME_BIN or install google-chrome / chromium."
+    )
+
+
 def capture_screenshot(url: str, output_path: str):
-    chrome_bin = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    chrome_bin = _resolve_chrome_binary()
     cmd = [
         chrome_bin,
         "--headless",

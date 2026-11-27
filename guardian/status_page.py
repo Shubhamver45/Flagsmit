@@ -338,10 +338,10 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 
     <!-- Human Approval Banner -->
     <div id="awaiting-banner" class="banner-awaiting" style="display: none;">
-      <div>
+      <div id="awaiting-banner-text">
         <strong>Human Approval Required:</strong> All guardrails satisfied. Ready for final 100% promotion.
       </div>
-      <button class="btn-approve" onclick="handleApprove()">Approve 100%</button>
+      <button id="btn-banner-approve" class="btn-approve" onclick="handleApprove()">Approve 100%</button>
     </div>
 
     <!-- Multi-Rollout Overview (if multiple rollouts active) -->
@@ -577,13 +577,32 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       // Banner & Approve button
       const isAwaiting = data.state === 'AWAITING_APPROVAL';
       const isEligible = (data.is_eligible_for_approval !== undefined) ? Boolean(data.is_eligible_for_approval) : (data.experiment ? (data.experiment.is_eligible_for_approval === true) : true);
-      document.getElementById('awaiting-banner').style.display = isAwaiting ? 'flex' : 'none';
+      const awaitingBanner = document.getElementById('awaiting-banner');
+      const awaitingBannerText = document.getElementById('awaiting-banner-text');
+      const bannerApproveBtn = document.getElementById('btn-banner-approve');
+      awaitingBanner.style.display = isAwaiting ? 'flex' : 'none';
       const approveBtn = document.getElementById('btn-approve-action');
       approveBtn.disabled = !isAwaiting || !isEligible;
+      if (bannerApproveBtn) {
+        bannerApproveBtn.disabled = !isAwaiting || !isEligible;
+      }
       if (isAwaiting && !isEligible) {
-        approveBtn.title = data.approval_block_reason || data.experiment?.block_reason || 'Approval blocked by experiment guardrail';
+        const blockReason = data.approval_block_reason || data.experiment?.block_reason || 'Experiment guardrail not satisfied';
+        approveBtn.title = blockReason;
+        if (bannerApproveBtn) bannerApproveBtn.title = blockReason;
+        if (awaitingBannerText) {
+          awaitingBannerText.innerHTML = `<strong>Approval Blocked:</strong> ${blockReason}`;
+        }
+        awaitingBanner.style.borderColor = '#ef4444';
+        awaitingBanner.style.background = 'rgba(239, 68, 68, 0.12)';
       } else {
         approveBtn.title = '';
+        if (bannerApproveBtn) bannerApproveBtn.title = '';
+        if (awaitingBannerText) {
+          awaitingBannerText.innerHTML = '<strong>Human Approval Required:</strong> All guardrails satisfied. Ready for final 100% promotion.';
+        }
+        awaitingBanner.style.borderColor = '';
+        awaitingBanner.style.background = '';
       }
 
       // Color code state badge
@@ -747,11 +766,14 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         }
 
         const isExpGuardrail = g.metric_source === 'flagsmith_experiment' || g.name.startsWith('checkout_ab');
+        const unit = (g.unit !== undefined && g.unit !== null)
+          ? g.unit
+          : (g.name && g.name.toLowerCase().includes('latency') ? 'ms' : '%');
         const val = (g.value !== null && g.value !== undefined)
-          ? (typeof g.value === 'number' ? g.value.toFixed(2) + '%' : g.value)
+          ? (typeof g.value === 'number' ? g.value.toFixed(2) + unit : g.value)
           : (isExpGuardrail ? 'n/a (collecting data)' : '--');
         const samples = g.sample_size !== null && g.sample_size !== undefined ? g.sample_size : '--';
-        const threshold = g.threshold !== undefined ? `${g.comparison || '<'} ${g.threshold}%` : '--';
+        const threshold = g.threshold !== undefined ? `${g.comparison || '<'} ${g.threshold}${unit}` : '--';
 
         return `
           <tr>

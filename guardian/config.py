@@ -25,6 +25,7 @@ class Guardrail:
     action_on_srm: str = "ROLLBACK"  # ROLLBACK or HOLD
     description: str = ""
     require_winner: bool = False
+    unit: str = "%"
 
     def evaluate(self, current_value: float) -> bool:
         """
@@ -179,6 +180,7 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
             action_on_srm=g.get("action_on_srm", "ROLLBACK"),
             description=g.get("description", ""),
             require_winner=bool(g.get("require_winner", False)),
+            unit=g.get("unit") if g.get("unit") is not None else ("ms" if "latency" in g["name"].lower() else "%"),
         )
         for g in raw_guardrails
     ]
