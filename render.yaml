@@ -19,5 +19,7 @@ services:
         sync: false
       - key: FLAGSMITH_ENVIRONMENT_KEY
         sync: false
+      - key: PORT
+        value: "8080"
       - key: SLACK_WEBHOOK_URL
-        sync: false
+        value: ""

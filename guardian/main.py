@@ -271,9 +271,9 @@ def run_server(
 
 def main():
     parser = argparse.ArgumentParser(description="Guardian Guarded Rollout Service")
-    parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    parser.add_argument("--config", default=os.environ.get("GUARDIAN_CONFIG_PATH", "config.yaml"), help="Path to config.yaml")
     parser.add_argument("--host", default=None, help="Host address (default: 127.0.0.1; 0.0.0.0 in demo mode)")
-    parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")), help="Port (default: $PORT or 8080)")
     parser.add_argument("--interval", type=float, default=3.0, help="Evaluation tick interval seconds (default: 3.0)")
     parser.add_argument("--reconcile-interval", type=float, default=None, help="Reconciliation poll interval seconds (default: 10.0)")
     parser.add_argument("--demo-mode", action="store_true", help="Enable accelerated demo mode with fast soak times")
