@@ -122,7 +122,7 @@ services:
             print(proc.stdout, proc.stderr, file=sys.stderr)
             sys.exit(proc.returncode)
 
-        m = re.search(r"BEGIN_DOTENV\n(.*?)\nEND_DOTENV", proc.stdout, re.DOTALL)
+        m = re.search(r"=== DOTENV_START ===\n(.*?)\n=== DOTENV_END ===", proc.stdout, re.DOTALL)
         if not m:
             print(proc.stdout, file=sys.stderr)
             sys.exit(1)
