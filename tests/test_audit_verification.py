@@ -304,3 +304,19 @@ def test_setup_flagsmith_409_reuses_existing_experiment(monkeypatch, tmp_path):
             admin_email="admin@example.com",
             admin_password="pw",
         )
+
+
+def test_demo_sh_syntax_and_serve_mode():
+    """Verify scripts/demo.sh passes bash -n and --serve waits after Phases 1-5."""
+    import subprocess
+    from pathlib import Path
+
+    demo_path = Path(__file__).resolve().parent.parent / "scripts" / "demo.sh"
+    res = subprocess.run(["bash", "-n", str(demo_path)], capture_output=True, text=True)
+    assert res.returncode == 0, f"bash -n failed: {res.stderr}"
+
+    text = demo_path.read_text(encoding="utf-8")
+    assert "Demo complete. Dashboard still running at http://localhost:8080. Press Ctrl+C to stop." in text
+    phase5_pos = text.index("Phase 5")
+    serve_wait_pos = text.index("Demo complete. Dashboard still running at http://localhost:8080. Press Ctrl+C to stop.")
+    assert serve_wait_pos > phase5_pos

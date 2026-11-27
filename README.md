@@ -63,6 +63,9 @@ cd flagsmith-guardian
 
 # Run the automated end-to-end demo orchestrator
 ./scripts/demo.sh
+
+# Or pass --serve to run the full demo and keep the dashboard running at http://localhost:8080
+./scripts/demo.sh --serve
 ```
 
 ### Illustrative Dashboard States (Sample Data)

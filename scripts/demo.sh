@@ -176,12 +176,6 @@ else
     exit 1
 fi
 
-if [ "$SERVE_MODE" -eq 1 ]; then
-    echo "Running in SERVE mode. Press Ctrl+C to stop."
-    wait
-    exit 0
-fi
-
 # Automated Demonstration Workflow
 get_status_field() {
     local field="$1"
@@ -665,3 +659,10 @@ for e in data.get('timeline', []):
     print(f\"  [{ts_display}] [{dec_display}] {from_st} ➔ {to_st}{pct_str} | {reason}\")
 "
 echo "========================================================================"
+
+
+if [ "$SERVE_MODE" -eq 1 ]; then
+    echo ""
+    echo "Demo complete. Dashboard still running at http://localhost:8080. Press Ctrl+C to stop."
+    wait
+fi
