@@ -174,7 +174,7 @@ docker run -d \
   -e PROMETHEUS_URL="http://prometheus.internal:9090" \
   -e GUARDIAN_API_TOKEN="your-secure-admin-token" \
   -e GUARDIAN_ENV="production" \
-  ghcr.io/shubhamver45/flagsmith-guardian:v0.1.0
+  ghcr.io/shubhamver45/flagsmith-guardian:latest
 ```
 > [!TIP]
 > If using a host bind mount instead of a named volume (e.g. `-v /var/data/guardian:/app/data`), ensure the host directory is owned by the container non-root user: `sudo chown -R 10001:10001 /var/data/guardian`.
