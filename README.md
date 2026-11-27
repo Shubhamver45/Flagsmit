@@ -78,7 +78,7 @@ cd flagsmith-guardian
 | Experiment Gate Blocked (SRM Anomaly) | Automated Rollback to 0.0% on Breach |
 | :---: | :---: |
 | [![Approval Blocked](docs/img/approval_blocked.png)](docs/img/approval_blocked.png) | [![Automated Rollback](docs/img/rollback.png)](docs/img/rollback.png) |
-| *Promotion strictly blocked when traffic assignment corrupts (p < 0.001)* | *Automated rollback to 0.0% in 3.70–7.30s when error rate exceeds 5.0% threshold* |
+| *Promotion blocked when SRM fires (live `./scripts/demo.sh --serve` capture, p < 0.001)* | *Automated rollback to 0.0% in 3.70–7.30s when error rate exceeds 5.0% threshold* |
 
 ### What `demo.sh` Runs
 1. **Infrastructure Spin-Up**: Launches self-hosted Flagsmith, PostgreSQL, Task Processor, Prometheus, and the Demo Checkout App in Docker.
