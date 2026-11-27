@@ -101,14 +101,22 @@ class ResetRequest(BaseModel):
     flag_name: Optional[str] = None
 
 
+class PauseRequest(BaseModel):
+    flag_name: Optional[str] = None
+
+
+class ResumeRequest(BaseModel):
+    flag_name: Optional[str] = None
+
+
 def create_app(
     engine: GuardianEngine,
     api_token: Optional[str] = None,
     lifespan: Optional[Any] = None,
 ) -> FastAPI:
     app = FastAPI(
-        title="Guardian Service",
-        description="Guarded Rollout Engine for Flagsmith",
+        title="SwitchGuard",
+        description="Autonomous Production Safety for Flagsmith",
         version="1.0.0",
         lifespan=lifespan,
     )
@@ -161,16 +169,49 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        token = os.environ.get("GUARDIAN_API_TOKEN") or ""
-        html = STATUS_PAGE_HTML.replace(
-            "const token = localStorage.getItem('guardian_token');",
-            f"const token = localStorage.getItem('guardian_token') || '{token}';",
-        )
-        return html
+        # Security: Never inject server-side secrets into served HTML.
+        # The dashboard reads the operator token from localStorage only.
+        # Set it via the token input field in the UI or via browser console:
+        #   localStorage.setItem('guardian_token', '<your-token>')
+        return STATUS_PAGE_HTML
 
     @app.get("/health")
-    def health() -> Dict[str, str]:
-        return {"status": "healthy", "service": "guardian"}
+    def health() -> Dict[str, Any]:
+        """Fast local process liveness probe."""
+        return {"status": "healthy", "service": "switchguard"}
+
+    @app.get("/ready")
+    def ready() -> JSONResponse:
+        """Readiness probe: checks SQLite connectivity and Flagsmith reachability."""
+        checks: Dict[str, str] = {}
+        db_ok = True
+
+        # 1. SQLite check
+        try:
+            engine.storage._conn.execute("SELECT 1").fetchone()
+            checks["db"] = "ok"
+        except Exception as exc:
+            checks["db"] = f"error: {exc}"
+            db_ok = False
+
+        # 2. Flagsmith reachability (best-effort, 2s timeout)
+        try:
+            import requests as _req
+            flagsmith_url = os.environ.get("FLAGSMITH_URL", "http://localhost:8000")
+            r = _req.get(f"{flagsmith_url.rstrip('/')}/api/v1/", timeout=2.0)
+            checks["flagsmith"] = "ok" if r.status_code < 500 else f"degraded ({r.status_code})"
+        except Exception:
+            checks["flagsmith"] = "degraded (unreachable)"
+
+        payload = {
+            "status": "ready" if db_ok else "not_ready",
+            "service": "switchguard",
+            **checks,
+        }
+        return JSONResponse(
+            status_code=status.HTTP_200_OK if db_ok else status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=payload,
+        )
 
     @app.post(
         "/webhooks/flagsmith",
@@ -342,5 +383,144 @@ def create_app(
             "current_percentage": engine.current_percentage,
             "audit_entry": entry.to_dict(),
         }
+
+    # -------------------------------------------------------------------------
+    # Pause / Resume endpoints
+    # -------------------------------------------------------------------------
+    @app.post(
+        "/pause",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
+    def pause_rollout(
+        payload: Optional[PauseRequest] = None,
+        flag: Optional[str] = Query(None, alias="flag_name"),
+    ) -> Dict[str, Any]:
+        """Pause a live rollout without rolling back. Resume with POST /resume."""
+        target_flag = (payload.flag_name if payload and payload.flag_name else None) or flag or engine.config.flag_name
+        try:
+            entry = engine.pause(flag_name=target_flag)
+            sm = engine.state_machines[target_flag]
+            return {
+                "status": "paused",
+                "message": f"Rollout paused for '{target_flag}'",
+                "flag_name": target_flag,
+                "current_state": sm.current_state,
+                "current_percentage": sm.current_percentage,
+                "audit_entry": entry.to_dict(),
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    @app.post(
+        "/resume",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
+    def resume_rollout(
+        payload: Optional[ResumeRequest] = None,
+        flag: Optional[str] = Query(None, alias="flag_name"),
+    ) -> Dict[str, Any]:
+        """Resume a previously paused rollout."""
+        target_flag = (payload.flag_name if payload and payload.flag_name else None) or flag or engine.config.flag_name
+        try:
+            entry = engine.resume(flag_name=target_flag)
+            sm = engine.state_machines[target_flag]
+            return {
+                "status": "resumed",
+                "message": f"Rollout resumed for '{target_flag}'",
+                "flag_name": target_flag,
+                "current_state": sm.current_state,
+                "current_percentage": sm.current_percentage,
+                "audit_entry": entry.to_dict(),
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    # -------------------------------------------------------------------------
+    # Incidents endpoint
+    # -------------------------------------------------------------------------
+    @app.get(
+        "/incidents",
+        dependencies=[Depends(verify_write_token)],
+    )
+    def get_incidents(
+        flag_name: Optional[str] = None,
+        limit: int = Query(20, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        include_resolved: bool = True,
+    ) -> Dict[str, Any]:
+        """Return recent production incidents recorded by SwitchGuard."""
+        incidents = engine.storage.get_incidents(
+            flag_name=flag_name,
+            limit=limit,
+            offset=offset,
+            include_resolved=include_resolved,
+        )
+        total = engine.storage.count_incidents(
+            flag_name=flag_name,
+            include_resolved=include_resolved,
+        )
+        return {
+            "incidents": incidents,
+            "count": len(incidents),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    # -------------------------------------------------------------------------
+    # Flagsmith Discovery endpoints (authenticated, secrets redacted)
+    # -------------------------------------------------------------------------
+    @app.get(
+        "/flagsmith/projects",
+        dependencies=[Depends(verify_write_token)],
+    )
+    def list_flagsmith_projects() -> Dict[str, Any]:
+        """List Flagsmith projects accessible to the configured admin key."""
+        try:
+            projects = engine.flagsmith_client.list_projects()
+            safe_projects = [
+                {"id": p.get("id"), "name": p.get("name"), "organisation": p.get("organisation")}
+                for p in projects
+            ]
+            return {"projects": safe_projects, "count": len(safe_projects)}
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Flagsmith error: {type(e).__name__}")
+
+    @app.get(
+        "/flagsmith/environments",
+        dependencies=[Depends(verify_write_token)],
+    )
+    def list_flagsmith_environments(project_id: Optional[int] = None) -> Dict[str, Any]:
+        """List Flagsmith environments for a project (API keys redacted)."""
+        try:
+            envs = engine.flagsmith_client.list_environments(project_id=project_id)
+            safe_envs = [
+                {"id": env.get("id"), "name": env.get("name"), "project": env.get("project")}
+                for env in envs
+            ]
+            return {"environments": safe_envs, "count": len(safe_envs)}
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Flagsmith error: {type(e).__name__}")
+
+    @app.get(
+        "/flagsmith/features",
+        dependencies=[Depends(verify_write_token)],
+    )
+    def list_flagsmith_features(project_id: Optional[int] = None) -> Dict[str, Any]:
+        """List Flagsmith feature flags for a project."""
+        try:
+            features = engine.flagsmith_client.list_features(project_id=project_id)
+            safe_features = [
+                {
+                    "id": f.get("id"),
+                    "name": f.get("name"),
+                    "type": f.get("type"),
+                    "default_enabled": f.get("default_enabled"),
+                }
+                for f in features
+            ]
+            return {"features": safe_features, "count": len(safe_features)}
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Flagsmith error: {type(e).__name__}")
 
     return app

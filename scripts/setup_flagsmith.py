@@ -318,20 +318,33 @@ def setup_via_admin_api(
         json={"key": "variation", "feature": exp_feat["id"], "default_percentage_allocation": 50.0},
     ).raise_for_status()
 
-    # 3. Clean up any existing experiments & metrics for a reproducible fresh run
+    # 3. Selectively clean up only SwitchGuard-owned demo experiments & metrics
+    #    Strict ownership: requires exact feature + name match (no wildcard prefix matching)
     exps_resp = requests.get(f"{api_url}/environments/{env_key}/experiments/", headers=headers)
     exps = exps_resp.json().get("results", []) if exps_resp.status_code == 200 else []
     for exp in exps:
+        is_demo_exp = (
+            exp.get("feature") == exp_feat["id"]
+            and exp.get("name") == "Checkout A/B Experiment"
+        )
+        if not is_demo_exp:
+            continue
         if exp["status"] == "running":
             requests.post(f"{api_url}/environments/{env_key}/experiments/{exp['id']}/complete/", headers=headers)
         requests.delete(f"{api_url}/environments/{env_key}/experiments/{exp['id']}/", headers=headers)
-        print(f"  ✔ Reset existing experiment {exp['id']} via Admin API")
+        print(f"  ✔ Reset existing demo experiment {exp['id']} via Admin API")
 
     metrics_resp = requests.get(f"{api_url}/environments/{env_key}/experiment-metrics/", headers=headers)
     metrics = metrics_resp.json().get("results", []) if metrics_resp.status_code == 200 else []
     for m in metrics:
+        is_demo_metric = (
+            m.get("name") == "Checkout Completed"
+            and (m.get("definition") or {}).get("event") == "checkout_completed"
+        )
+        if not is_demo_metric:
+            continue
         requests.delete(f"{api_url}/environments/{env_key}/experiment-metrics/{m['id']}/", headers=headers)
-        print(f"  ✔ Reset existing metric {m['id']} via Admin API")
+        print(f"  ✔ Reset existing demo metric {m['id']} via Admin API")
 
     # 4. Conversion Metric: Checkout Completed
     m_res = requests.post(
