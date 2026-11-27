@@ -117,13 +117,16 @@ class RolloutStateMachine:
             for ev in evaluations:
                 if ev.is_breached:
                     prev_state = self.current_state
+                    prev_pct = self.current_percentage
                     self.current_state = RolloutState.ROLLED_BACK.value
+                    ev_details = getattr(ev, "details", None) or {}
                     numbers = {
                         "metric_name": ev.name,
                         "metric_value": ev.value,
+                        "threshold": ev_details.get("threshold"),
                         "sample_size": ev.sample_size,
                         "stage_index": self.current_stage_index,
-                        "rolled_back_from_percentage": self.current_percentage,
+                        "rolled_back_from_percentage": prev_pct,
                         "details": ev.details,
                     }
                     return self.current_state, RolloutDecision.ROLLBACK, ev.reason, numbers
@@ -141,6 +144,7 @@ class RolloutStateMachine:
                 breached = guardrail.evaluate(val)
                 if breached:
                     prev_state = self.current_state
+                    prev_pct = self.current_percentage
                     self.current_state = RolloutState.ROLLED_BACK.value
                     numbers = {
                         "metric_name": guardrail.name,
@@ -148,7 +152,7 @@ class RolloutStateMachine:
                         "threshold": guardrail.threshold,
                         "comparison": guardrail.comparison,
                         "stage_index": self.current_stage_index,
-                        "rolled_back_from_percentage": self.current_percentage,
+                        "rolled_back_from_percentage": prev_pct,
                     }
                     reason = (
                         f"Guardrail '{guardrail.name}' breached! "

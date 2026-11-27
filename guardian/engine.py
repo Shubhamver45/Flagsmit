@@ -655,6 +655,19 @@ class GuardianEngine:
                         metric_name = numbers.get("metric_name")
                         observed_val = numbers.get("metric_value")
                         threshold = numbers.get("threshold")
+                        if threshold is None:
+                            threshold = (numbers.get("details") or {}).get("threshold")
+                        if threshold is None and metric_name:
+                            matched_g = next((g for g in rc.guardrails if g.name == metric_name), None)
+                            if matched_g is not None:
+                                threshold = matched_g.threshold
+                        from_pct = numbers.get("rolled_back_from_percentage")
+                        if isinstance(from_pct, float) and from_pct.is_integer():
+                            from_pct_str = f"{int(from_pct)}%"
+                        elif from_pct is not None:
+                            from_pct_str = f"{from_pct}%"
+                        else:
+                            from_pct_str = str(prev_state)
                         incident = Incident(
                             flag_name=flag_name,
                             trigger_type="GUARDRAIL_BREACH",
@@ -663,7 +676,7 @@ class GuardianEngine:
                                 f"Guardrail breach detected: {metric_name or 'unknown metric'} "
                                 f"observed {observed_val} (threshold {threshold}). "
                                 f"Guardian automatically rolled back {flag_name} from "
-                                f"{numbers.get('rolled_back_from_percentage', prev_state)}% to 0%."
+                                f"{from_pct_str} to 0%."
                             ),
                             metric_name=metric_name,
                             observed_value=float(observed_val) if observed_val is not None else None,
