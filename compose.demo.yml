@@ -92,6 +92,7 @@ services:
 
   setup-flagsmith:
     image: docker.flagsmith.com/flagsmith/flagsmith:latest
+    user: "0:0"
     restart: "no"
     environment:
       <<: *flagsmith-env
@@ -108,7 +109,7 @@ services:
       - python
       - -c
       - |
-        import re, subprocess, sys
+        import os, re, subprocess, sys
         sys.path.insert(0, "/opt")
         from setup_flagsmith import setup_via_admin_api
 
@@ -130,6 +131,7 @@ services:
         dotenv_text = m.group(1).replace("http://localhost:8000/api/v1", "http://flagsmith:8000/api/v1")
         with open("/shared/demo.env", "w", encoding="utf-8") as f:
             f.write(dotenv_text + "\n")
+        os.chmod("/shared/demo.env", 0o644)
 
         conf = {}
         for line in dotenv_text.splitlines():
