@@ -1,4 +1,4 @@
-"""Comprehensive engineering audit tests for SwitchGuard (Sections 2-6)."""
+"""Comprehensive engineering audit tests for Guardian (Sections 2-6)."""
 
 import asyncio
 import pytest
@@ -223,7 +223,7 @@ def test_selective_cleanup_ownership_rules():
     # Verify exact ownership logic preserves user-owned experiments/metrics
     exp_feat_id = 42
     exps = [
-        {"id": 1, "feature": 42, "name": "Checkout A/B Experiment"},      # SwitchGuard-owned
+        {"id": 1, "feature": 42, "name": "Checkout A/B Experiment"},      # Guardian-owned
         {"id": 2, "feature": 99, "name": "Checkout Redesign Test"},       # User-owned!
         {"id": 3, "feature": 42, "name": "User Custom Checkout Test"},    # User-owned!
     ]
@@ -234,7 +234,7 @@ def test_selective_cleanup_ownership_rules():
     assert deleted_exps == [1]
 
     metrics = [
-        {"id": 10, "name": "Checkout Completed", "definition": {"event": "checkout_completed"}},  # SwitchGuard-owned
+        {"id": 10, "name": "Checkout Completed", "definition": {"event": "checkout_completed"}},  # Guardian-owned
         {"id": 11, "name": "Checkout Completed", "definition": {"event": "other_event"}},         # User-owned
         {"id": 12, "name": "Revenue", "definition": {"event": "checkout_completed"}},             # User-owned
     ]

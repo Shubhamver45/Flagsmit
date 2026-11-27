@@ -1,4 +1,4 @@
-"""Tests for new SwitchGuard API endpoints: /pause, /resume, /incidents, /health, /flagsmith/*, and no token injection."""
+"""Tests for new Guardian API endpoints: /pause, /resume, /incidents, /health, /ready, /flagsmith/*, and no token injection."""
 
 from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
@@ -48,7 +48,7 @@ def test_index_does_not_inject_api_token(tmp_path, monkeypatch):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "super-secret-live-token-xyz" not in resp.text
-    assert "SwitchGuard" in resp.text
+    assert "Guardian" in resp.text
     storage.close()
 
 
@@ -56,12 +56,12 @@ def test_health_readiness_probe(tmp_path):
     client, _, storage = _build_test_client(tmp_path)
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "healthy", "service": "switchguard"}
+    assert resp.json() == {"status": "healthy", "service": "guardian"}
 
     ready_resp = client.get("/ready")
     assert ready_resp.status_code == 200
     data = ready_resp.json()
-    assert data["service"] == "switchguard"
+    assert data["service"] == "guardian"
     assert data["db"] == "ok"
     assert "flagsmith" in data
     storage.close()

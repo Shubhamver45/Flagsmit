@@ -19,7 +19,7 @@ for arg in "$@"; do
 done
 
 echo "========================================================================"
-echo "🛡️  SWITCHGUARD END-TO-END DEMO ORCHESTRATOR"
+echo "🛡️  GUARDIAN END-TO-END DEMO ORCHESTRATOR"
 echo "========================================================================"
 
 export DEMO_FORCE_RECALC="${DEMO_FORCE_RECALC:-1}"

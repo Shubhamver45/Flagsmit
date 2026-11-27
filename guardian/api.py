@@ -115,8 +115,8 @@ def create_app(
     lifespan: Optional[Any] = None,
 ) -> FastAPI:
     app = FastAPI(
-        title="SwitchGuard",
-        description="Autonomous Production Safety for Flagsmith",
+        title="Guardian Service",
+        description="Guarded Rollout Engine for Flagsmith",
         version="1.0.0",
         lifespan=lifespan,
     )
@@ -178,7 +178,7 @@ def create_app(
     @app.get("/health")
     def health() -> Dict[str, Any]:
         """Fast local process liveness probe."""
-        return {"status": "healthy", "service": "switchguard"}
+        return {"status": "healthy", "service": "guardian"}
 
     @app.get("/ready")
     def ready() -> JSONResponse:
@@ -205,7 +205,7 @@ def create_app(
 
         payload = {
             "status": "ready" if db_ok else "not_ready",
-            "service": "switchguard",
+            "service": "guardian",
             **checks,
         }
         return JSONResponse(
@@ -448,7 +448,7 @@ def create_app(
         offset: int = Query(0, ge=0),
         include_resolved: bool = True,
     ) -> Dict[str, Any]:
-        """Return recent production incidents recorded by SwitchGuard."""
+        """Return recent production incidents recorded by Guardian."""
         incidents = engine.storage.get_incidents(
             flag_name=flag_name,
             limit=limit,

@@ -1,5 +1,5 @@
-# SwitchGuard 🛡️
-> **Autonomous Production Safety for Self-Hosted Flagsmith** *(formerly Flagsmith Guardian)*  
+# Guardian 🛡️
+> **Automated Guarded Rollouts and Blast-Radius Containment for Self-Hosted Flagsmith**  
 > *Flagsmith Hackathon — Track 03: Build on Open Source Flagsmith*
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
@@ -12,11 +12,11 @@
 
 ## 1. Problem & Who It's For
 
-Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Teams running self-hosted feature flags often have to build custom glue code for automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates. **SwitchGuard** (formerly Flagsmith Guardian) is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.7–6.0s upon threshold breaches, and detecting out-of-band drift in about 6–10s.
+Modern engineering teams practicing continuous delivery rely on feature flags to decouple deployment from release, but operating progressive rollouts safely on self-hosted infrastructure remains manual, slow, and perilous. When a newly enabled feature causes subtle regressions—such as payment gateway timeouts, database query contention, or memory exhaustion—on-call engineers must manually triage alerts, interpret conflicting dashboards, log into admin portals, and toggle flags to 0%. Teams running self-hosted feature flags often have to build custom glue code for automated metric guardrails, auto-rollbacks, and experimentation-driven rollout gates. **Guardian** is an open-source reliability sidecar with security-conscious defaults (v0.1.0 beta) purpose-built for engineering teams running open-source, self-hosted Flagsmith. It eliminates manual rollout babysitting by automating progressive canary stages, continuously evaluating operational guardrails and experiment statistics, executing automated rollbacks in 3.7–6.0s upon threshold breaches, and detecting out-of-band drift in about 6–10s.
 
 ---
 
-## 2. What SwitchGuard Does
+## 2. What Guardian Does
 
 * **Automated Progressive Staging & Operator Pause/Resume**: Progresses feature flag allocations through configurable rollout stages (e.g., 1% ➔ 5% ➔ 25% ➔ 100%) via Flagsmith's Admin API, with live `PAUSED` / `resume()` operator controls (`POST /pause`, `POST /resume`).
 * **Rapid Blast-Radius Containment & Incident Intelligence**: Continuously queries Prometheus PromQL metrics (e.g., HTTP 5xx error rate, p99 latency), triggers automated rollbacks to 0.0% in 3.7–6.0s when thresholds breach, and persists structured incident records with human-readable root-cause explanations (`GET /incidents`).
@@ -293,7 +293,7 @@ For managing multiple feature rollouts simultaneously:
 
 ## 8. Measured Performance Benchmarks
 
-Across five consecutive end-to-end demo runs ([demo-run-1.log](docs/runs/demo-run-1.log), [demo-run-2.log](docs/runs/demo-run-2.log), [demo-run-3.log](docs/runs/demo-run-3.log), [demo-run-4.log](docs/runs/demo-run-4.log), [demo-run-5.log](docs/runs/demo-run-5.log)) executed against self-hosted Flagsmith in Docker, SwitchGuard's performance metrics were mechanically measured as follows:
+Across five consecutive end-to-end demo runs ([demo-run-1.log](docs/runs/demo-run-1.log), [demo-run-2.log](docs/runs/demo-run-2.log), [demo-run-3.log](docs/runs/demo-run-3.log), [demo-run-4.log](docs/runs/demo-run-4.log), [demo-run-5.log](docs/runs/demo-run-5.log)) executed against self-hosted Flagsmith in Docker, Guardian's performance metrics were mechanically measured as follows:
 
 | Metric | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Min | Median | Max | Proved In |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -335,7 +335,7 @@ Factual chronological progression reconstructed from `git log --date=short`:
 * **2026-11-20**: Initial infrastructure and prototype feasibility spike; Docker Compose with self-hosted Flagsmith, PostgreSQL, Task Processor, and Prometheus; initial state machine, Prometheus PromQL metric provider, and Flask demo app.
 * **2026-11-21**: Accelerated demo execution soak calibration and autonomous daemon loop verification.
 * **2026-11-22**: Hardening and API security; API token authentication on write endpoints; dynamic environment resolution; integration with live Flagsmith Experimentation API and SRM chi-squared gating.
-* **2026-11-27 (SwitchGuard Release)**: Rebranded to **SwitchGuard** with `switchguard` CLI entrypoint; added `PAUSED` rollout state (`POST /pause`, `POST /resume`), structured **Incident Intelligence** (`guardian/incident.py`, `GET /incidents`), Flagsmith project/environment/feature discovery endpoints (`/flagsmith/*`), deep readiness `/health` probe, HTTP retry/timeouts on Flagsmith Admin API calls, `.env.example`, and removed server-side token injection from `guardian/api.py`.
+* **2026-11-27**: Added `PAUSED` rollout state (`POST /pause`, `POST /resume`), structured **Incident Intelligence** (`guardian/incident.py`, `GET /incidents`), Flagsmith project/environment/feature discovery endpoints (`/flagsmith/*`), `/ready` readiness probe, HTTP retry/timeouts on Flagsmith Admin API calls, `.env.example`, and removed server-side token injection from `guardian/api.py`.
 * **2026-11-23**: CLI operator interface (`guardian init`, `approve`, `rollback`, `reset`, `status`); GitHub Container Registry (GHCR) publishing pipeline and automated CI test matrix (Python 3.11 & 3.12); fast Prometheus rate window guardrail.
 * **2026-11-24**: SQLite transactional persistence replacing in-memory state; concurrent multi-rollout support; automated setup via Flagsmith public Admin API (`setup_flagsmith.py`) with masked credentials; Flagsmith warehouse connection verification.
 * **2026-11-25**: Real-time Flagsmith environment webhooks with constant-time HMAC-SHA256 signature verification; drift reconciliation with write ledger echo immunity; non-root container packaging (`UID 10001`); request size limits (64KB), sliding-window rate limiting (60 req/min), secret log redacting, and end-to-end 5-run empirical performance benchmarking.

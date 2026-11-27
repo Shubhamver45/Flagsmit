@@ -1,5 +1,5 @@
 """
-SwitchGuard Incident Intelligence.
+Guardian Incident Intelligence.
 
 Structured incident records are created whenever Guardian triggers an
 automated action (rollback, drift containment, SRM block).  Each incident
@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 @dataclass
 class Incident:
-    """A single production incident detected and acted on by SwitchGuard."""
+    """A single production incident detected and acted on by Guardian."""
 
     flag_name: str
     trigger_type: str          # "GUARDRAIL_BREACH" | "DRIFT" | "SRM" | "MANUAL"

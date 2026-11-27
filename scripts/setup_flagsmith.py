@@ -318,7 +318,7 @@ def setup_via_admin_api(
         json={"key": "variation", "feature": exp_feat["id"], "default_percentage_allocation": 50.0},
     ).raise_for_status()
 
-    # 3. Selectively clean up only SwitchGuard-owned demo experiments & metrics
+    # 3. Selectively clean up only Guardian-owned demo experiments & metrics
     #    Strict ownership: requires exact feature + name match (no wildcard prefix matching)
     exps_resp = requests.get(f"{api_url}/environments/{env_key}/experiments/", headers=headers)
     exps = exps_resp.json().get("results", []) if exps_resp.status_code == 200 else []

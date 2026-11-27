@@ -15,7 +15,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SwitchGuard 🛡️ | Autonomous Production Safety for Flagsmith</title>
+  <title>Guardian 🛡️ | Automated Guarded Rollouts</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -306,7 +306,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
   <div class="container">
     <header>
       <div class="logo">
-        <h1>SwitchGuard 🛡️</h1>
+        <h1>Guardian 🛡️</h1>
         <span id="flag-badge">Flagsmith Flag: new_checkout</span>
       </div>
       <div style="display: flex; align-items: center; gap: 12px;">

@@ -226,7 +226,7 @@ guardrails:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SwitchGuard CLI Operator Interface")
+    parser = argparse.ArgumentParser(description="Guardian CLI Operator Interface")
     parser.add_argument("--url", default="http://localhost:8080", help="Guardian service URL (default: http://localhost:8080)")
     parser.add_argument("--token", default=None, help="Guardian API token (or set GUARDIAN_API_TOKEN env var)")
 
