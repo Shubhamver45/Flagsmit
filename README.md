@@ -72,7 +72,18 @@ git clone https://github.com/Shubhamver45/flagsmith-guardian.git
 cd flagsmith-guardian
 docker compose -f compose.demo.yml up
 ```
-This starts self-hosted Flagsmith (`http://localhost:8000`), Prometheus (`http://localhost:9090`), the sample checkout app + traffic simulator, a one-shot Flagsmith provisioner, and Guardian (`http://localhost:8080`) from `ghcr.io/shubhamver45/flagsmith-guardian:latest`.
+This starts self-hosted Flagsmith (`http://localhost:8000`), Prometheus (`http://localhost:9090`), the sample checkout app + traffic simulator, a one-shot Flagsmith provisioner, and Guardian (`http://localhost:8080`) from `ghcr.io/shubhamver45/flagsmith-guardian:latest`. All published ports bind to `127.0.0.1` only; Flagsmith API keys, webhook secret, and `GUARDIAN_API_TOKEN` are generated randomly at startup, while the Postgres/Django/admin bootstrap defaults in `compose.demo.yml` are **demo-only, never use in production**.
+
+**Trigger a live rollback & clean up (Compose mode):**
+```bash
+# 1. Watch the Guardian dashboard in your browser: http://localhost:8080
+# 2. Once rollout advances past 0%, inject a 50% error spike on the new checkout flow:
+curl -X POST "http://localhost:5001/toggle-bug?enabled=1"
+# Guardian detects the > 5.0% error rate in Prometheus and rolls new_checkout back to 0% (ROLLED_BACK).
+
+# 3. Stop and remove all containers and volumes when done:
+docker compose -f compose.demo.yml down -v
+```
 
 **Full scripted walkthrough (Docker + Python 3.11/3.12):**
 Run the full demo locally with `./scripts/demo.sh` (Docker + Python 3.11/3.12). A hosted demo is planned.
