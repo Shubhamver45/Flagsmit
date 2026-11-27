@@ -1040,11 +1040,16 @@ class GuardianEngine:
                 evals = []
             guardrail_reports = []
             unit_by_name = {g.name: getattr(g, "unit", "%") for g in rc.guardrails}
+            cfg_by_name = {g.name: g for g in rc.guardrails}
             if evals:
                 for ev in evals:
+                    cfg = cfg_by_name.get(ev.name)
                     guardrail_reports.append({
                         "name": ev.name,
                         "value": ev.value,
+                        "threshold": cfg.threshold if cfg else None,
+                        "comparison": cfg.comparison if cfg else None,
+                        "metric_source": cfg.metric_source if cfg else "prometheus",
                         "unit": unit_by_name.get(ev.name, "ms" if "latency" in ev.name.lower() else "%"),
                         "sample_size": ev.sample_size,
                         "status": ev.status.value if hasattr(ev.status, "value") else str(ev.status),

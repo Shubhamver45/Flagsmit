@@ -494,6 +494,12 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    function esc(v) {
+      return String(v === null || v === undefined ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     let activeFlagName = '';
 
     async function fetchStatus() {
@@ -591,7 +597,11 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         approveBtn.title = blockReason;
         if (bannerApproveBtn) bannerApproveBtn.title = blockReason;
         if (awaitingBannerText) {
-          awaitingBannerText.innerHTML = `<strong>Approval Blocked:</strong> ${blockReason}`;
+          awaitingBannerText.textContent = '';
+          const strongEl = document.createElement('strong');
+          strongEl.textContent = 'Approval Blocked:';
+          awaitingBannerText.appendChild(strongEl);
+          awaitingBannerText.appendChild(document.createTextNode(' ' + blockReason));
         }
         awaitingBanner.style.borderColor = '#ef4444';
         awaitingBanner.style.background = 'rgba(239, 68, 68, 0.12)';
@@ -683,7 +693,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           gateNoteEl.style.background = 'rgba(239, 68, 68, 0.1)';
           gateNoteEl.style.borderColor = 'rgba(239, 68, 68, 0.3)';
           gateNoteEl.style.color = '#f87171';
-          gateNoteEl.innerHTML = `⚠️ <strong>${exp.block_reason}</strong>`;
+          gateNoteEl.innerHTML = `⚠️ <strong>${esc(exp.block_reason)}</strong>`;
         } else {
           pillEl.className = 'status-pill pill-healthy';
           pillEl.innerText = 'HEALTHY';
@@ -773,17 +783,17 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           ? (typeof g.value === 'number' ? g.value.toFixed(2) + unit : g.value)
           : (isExpGuardrail ? 'n/a (collecting data)' : '--');
         const samples = g.sample_size !== null && g.sample_size !== undefined ? g.sample_size : '--';
-        const threshold = g.threshold !== undefined ? `${g.comparison || '<'} ${g.threshold}${unit}` : '--';
+        const threshold = (g.threshold !== undefined && g.threshold !== null) ? `${g.comparison || '<'} ${g.threshold}${unit}` : '--';
 
         return `
           <tr>
-            <td><strong>${g.name}</strong></td>
-            <td><span class="mono">${g.metric_source || 'prometheus'}</span></td>
+            <td><strong>${esc(g.name)}</strong></td>
+            <td><span class="mono">${esc(g.metric_source || 'prometheus')}</span></td>
             <td><strong class="mono">${val}</strong></td>
             <td class="mono">${threshold}</td>
             <td class="mono">${samples}</td>
             <td><span class="status-pill ${pillClass}">${pillText}</span></td>
-            <td style="color: var(--text-muted); font-size: 12px;">${g.reason || 'Monitoring healthy metrics'}</td>
+            <td style="color: var(--text-muted); font-size: 12px;">${esc(g.reason || 'Monitoring healthy metrics')}</td>
           </tr>
         `;
       }).join('');

@@ -193,11 +193,24 @@ def test_ineligible_approval_banner_and_guardrail_units(tmp_path):
     lat_g = next(g for g in status_data["guardrails"] if g["name"] == "p95_latency_ms")
     assert lat_g["unit"] == "ms"
 
+    # Threshold, comparison and source must be present when metrics exist
+    assert lat_g["threshold"] == 250.0
+    assert lat_g["comparison"] == ">"
+    assert lat_g["metric_source"] == "prometheus"
+    exp_g = next(g for g in status_data["guardrails"] if g["name"] == "checkout_ab_chance_to_be_worse")
+    assert exp_g["metric_source"] == "flagsmith_experiment"
+    assert exp_g["threshold"] == 10.0
+
     # Verify dashboard HTML/JS disables banner approve button and updates banner text on !isEligible
     html = client.get("/").text
     assert 'id="awaiting-banner-text"' in html
     assert 'id="btn-banner-approve"' in html
     assert "bannerApproveBtn.disabled = !isAwaiting || !isEligible;" in html
-    assert "<strong>Approval Blocked:</strong>" in html
+    assert "strongEl.textContent = 'Approval Blocked:'" in html
     assert "g.unit !== undefined" in html
+    # Block reasons / names are escaped or set via textContent, never raw innerHTML
+    assert "</strong> ${blockReason}" not in html
+    assert "esc(exp.block_reason)" in html
+    assert "esc(g.name)" in html
+    assert "esc(g.reason" in html
     storage.close()
