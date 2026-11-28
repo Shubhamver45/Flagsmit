@@ -183,8 +183,12 @@ class FlagsmithAdminClient:
                 "id": fs_id,
                 "enabled": payload["enabled"],
             }
-            if "feature_state_value" in fs:
-                fs_update["feature_state_value"] = fs["feature_state_value"]
+            if "feature_state_value" in fs and fs["feature_state_value"] is not None:
+                fsv = fs["feature_state_value"]
+                if isinstance(fsv, dict):
+                    fs_update["feature_state_value"] = fsv
+                else:
+                    fs_update["feature_state_value"] = {"type": "unicode", "string_value": str(fsv)}
             if "multivariate_feature_state_values" in payload:
                 fs_update["multivariate_feature_state_values"] = payload["multivariate_feature_state_values"]
 

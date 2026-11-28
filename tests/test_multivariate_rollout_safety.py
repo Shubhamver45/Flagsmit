@@ -323,7 +323,7 @@ def test_v2_feature_versioning_fallback_publishes_version():
                 {
                     "id": 1899299,
                     "enabled": True,
-                    "feature_state_value": "off",
+                    "feature_state_value": {"type": "unicode", "string_value": "off"},
                     "multivariate_feature_state_values": [
                         {"id": 5001, "multivariate_feature_option": 6001, "percentage_allocation": 1.0}
                     ],
