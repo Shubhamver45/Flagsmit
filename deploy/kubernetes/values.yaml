@@ -1,0 +1,35 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/shubhamver45/flagsmith-guardian
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+env:
+  GUARDIAN_ENV: "production"
+  GUARDIAN_PORT: "8080"
+  FLAGSMITH_URL: "http://flagsmith:8000/api/v1"
+  PROMETHEUS_URL: "http://prometheus:9090"
+
+secrets:
+  # Override via --set or an external secret manager before deploying
+  guardianApiToken: "replace-with-strong-random-token"
+  flagsmithWebhookSecret: "replace-with-webhook-secret"
+  flagsmithAdminApiKey: "replace-with-flagsmith-admin-key"
+  flagsmithEnvironmentKey: "replace-with-flagsmith-env-key"
+
+persistence:
+  enabled: true
+  size: 1Gi
+  mountPath: /app/data
+  storageClassName: ""
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  readOnlyRootFilesystem: true

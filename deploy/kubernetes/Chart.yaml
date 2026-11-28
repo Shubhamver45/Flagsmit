@@ -1,0 +1,6 @@
+apiVersion: v2
+name: flagsmith-guardian
+description: Example Helm chart for Flagsmith Guardian (untested on a live cluster)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

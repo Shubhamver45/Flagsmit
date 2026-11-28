@@ -358,7 +358,15 @@ Guardian is engineered with security-conscious defaults:
 * **Network & Ingress Hardening**: Localhost loopback binding (`127.0.0.1:8080`) by default; write endpoints enforce 64 KB request size limits and sliding-window rate limiting (proved by `tests/test_security.py`).
 * **Secret Scrubbing**: Sensitive tokens and passwords are automatically redacted from all application logs via `SecretRedactingFilter` (proved by `tests/test_security.py`). Credentials in query parameters (`?token=...`) are explicitly forbidden.
 
-See [SECURITY.md](SECURITY.md) for vulnerability disclosure policies and architectural details, and [docs/deploy.md](docs/deploy.md) for free-tier cloud deployment (Render Blueprint or Docker Compose + Caddy HTTPS).
+See [SECURITY.md](SECURITY.md) for vulnerability disclosure policies and architectural details, [docs/deploy.md](docs/deploy.md) for free-tier cloud deployment (Render Blueprint or Docker Compose + Caddy HTTPS), and [deploy/kubernetes/](deploy/kubernetes/) for an **example** Helm chart (untested on a real cluster).
+
+---
+
+## How to get help installing Guardian
+
+- **5-minute walkthrough:** Follow [docs/bring-your-own-app.md](docs/bring-your-own-app.md) to connect Prometheus or push metrics, generate `config.yaml` with `guardian init`, and wire Flagsmith webhooks.
+- **Questions & bug reports:** See [SUPPORT.md](SUPPORT.md) for where to ask questions and what diagnostics to include in a GitHub Issue.
+- **Early feedback:** Share what you ran Guardian against, what broke, or what is missing using [docs/feedback.md](docs/feedback.md).
 
 ---
 
