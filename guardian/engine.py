@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from guardian.config import GuardianConfig, RolloutConfig
-from guardian.flagsmith_client import FlagsmithClientProtocol
+from guardian.flagsmith_client import FlagsmithClientProtocol, MultivariateRolloutError
 from guardian.state_machine import RolloutDecision, RolloutState, RolloutStateMachine
 from guardian.audit_log import AuditEntry, AuditLogger
 from guardian.actions.alerts import AlertDispatcher
@@ -120,6 +120,28 @@ class GuardianEngine:
             # Read actual flag percentage from Flagsmith
             try:
                 real_pct = self.flagsmith_client.get_percentage_rollout(flag_name)
+            except MultivariateRolloutError as e:
+                logger.error(f"🛑 [SAFETY HOLD] Flag '{flag_name}': {e}")
+                drift_info = {
+                    "detected": True,
+                    "source": "multivariate_safety",
+                    "actual_percentage": None,
+                    "expected_percentage": expected_pct,
+                    "stored_state": stored_state,
+                    "message": str(e),
+                }
+                self.drift_flags[flag_name] = drift_info
+                self.storage.save_rollout_state(
+                    flag_name=flag_name,
+                    current_state=stored_state,
+                    current_stage_index=sm.current_stage_index,
+                    stage_entered_at=sm.stage_entered_at,
+                    current_percentage=expected_pct,
+                    is_approved=sm.is_approved,
+                    drift_detected=True,
+                    drift_details=drift_info,
+                )
+                continue
             except Exception as e:
                 logger.warning(f"Could not read actual Flagsmith rollout percentage for '{flag_name}': {e}")
                 real_pct = expected_pct
@@ -214,7 +236,7 @@ class GuardianEngine:
 
             if not is_enabled:
                 actual_pct = 0.0
-            elif mv_values:
+            elif len(mv_values) == 1:
                 actual_pct = float(mv_values[0].get("percentage_allocation", 0.0))
             else:
                 actual_pct = 100.0 if is_enabled else 0.0
@@ -381,6 +403,19 @@ class GuardianEngine:
 
                 try:
                     real_pct = self.flagsmith_client.get_percentage_rollout(flag_name)
+                except MultivariateRolloutError as e:
+                    logger.error(f"🛑 [SAFETY HOLD] Flag '{flag_name}': {e}")
+                    drift_info = {
+                        "detected": True,
+                        "source": "multivariate_safety",
+                        "actual_percentage": None,
+                        "expected_percentage": stored_pct,
+                        "stored_state": stored_state,
+                        "message": str(e),
+                    }
+                    self.drift_flags[flag_name] = drift_info
+                    results[flag_name] = {"drift": True, "error": str(e)}
+                    continue
                 except Exception as e:
                     logger.warning(f"Reconciliation query failed for '{flag_name}': {e}")
                     continue

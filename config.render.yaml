@@ -1,5 +1,5 @@
 # Guardian Configuration for Single-Container Render Deployment (Push Metrics)
-flag_name: "exp_pulsepilot_judge_checkout_v1"
+flag_name: "pulsepilot_checkout_rollout_v1"
 environment_key: ""
 
 stages:
