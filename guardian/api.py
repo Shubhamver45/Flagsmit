@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Security, Depends, status, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -31,7 +32,7 @@ logger = logging.getLogger("guardian.api")
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Rejects request bodies exceeding maximum allowed byte size (413 Payload Too Large)."""
+    """Rejects request bodies exceeding maximum allowed byte size (413 Payload Too Large), including chunked requests."""
     def __init__(self, app, max_content_length: int = 65536):
         super().__init__(app)
         self.max_content_length = max_content_length
@@ -47,6 +48,18 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                     )
             except ValueError:
                 pass
+        if request.method in ("POST", "PUT", "PATCH"):
+            chunks: List[bytes] = []
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > self.max_content_length:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Request entity too large. Maximum allowed size is {self.max_content_length} bytes."},
+                    )
+                chunks.append(chunk)
+            request._body = b"".join(chunks)
         return await call_next(request)
 
 
@@ -123,6 +136,20 @@ def create_app(
     )
 
     app.add_middleware(RequestSizeLimitMiddleware, max_content_length=65536)
+
+    cors_raw = os.environ.get("GUARDIAN_CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080")
+    cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip() and o.strip() != "*"]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", "X-API-Token", "X-Guardian-Token"],
+        )
+
+    _seen_webhook_digests: Dict[str, float] = {}
+    _webhook_lock = threading.Lock()
 
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -260,6 +287,35 @@ def create_app(
         else:
             logger.info("ℹ [DEMO/OPEN MODE] Webhook processed without signature verification (no secret configured)")
 
+        ts_header = request.headers.get("X-Flagsmith-Timestamp") or request.headers.get("x-flagsmith-timestamp")
+        if ts_header:
+            try:
+                if abs(time.time() - float(ts_header)) > 300:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Webhook rejected: stale X-Flagsmith-Timestamp (>300s)",
+                    )
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid X-Flagsmith-Timestamp header",
+                )
+
+        if secret and raw_body:
+            digest = hashlib.sha256(raw_body + (ts_header or "").encode("utf-8")).hexdigest()
+            now_ts = time.time()
+            with _webhook_lock:
+                # Prune digests older than 5 minutes
+                stale = [k for k, v in _seen_webhook_digests.items() if now_ts - v > 300]
+                for k in stale:
+                    _seen_webhook_digests.pop(k, None)
+                if ts_header and digest in _seen_webhook_digests:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Webhook replay detected",
+                    )
+                _seen_webhook_digests[digest] = now_ts
+
         try:
             payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
         except Exception as e:
@@ -269,6 +325,11 @@ def create_app(
             )
 
         return engine.handle_flagsmith_webhook(payload)
+
+    @app.get("/audit/verify")
+    def verify_audit_chain() -> Dict[str, Any]:
+        """Verify tamper-evident SHA-256 hash chain over persisted audit log entries."""
+        return engine.storage.verify_audit_chain()
 
     @app.post(
         "/webhooks/slack",

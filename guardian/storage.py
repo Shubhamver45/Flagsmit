@@ -5,6 +5,7 @@ and experiment results into a single SQLite database file (default: ./data/guard
 """
 
 from __future__ import annotations
+import hashlib
 import json
 import logging
 import os
@@ -78,7 +79,9 @@ class GuardianStorage:
                     to_state TEXT NOT NULL,
                     decision TEXT NOT NULL,
                     reason TEXT NOT NULL,
-                    numbers_json TEXT NOT NULL
+                    numbers_json TEXT NOT NULL,
+                    prev_hash TEXT,
+                    entry_hash TEXT
                 );
             """)
             # Schema migration for existing audit_log tables
@@ -91,6 +94,10 @@ class GuardianStorage:
                     self._conn.execute("ALTER TABLE audit_log ADD COLUMN last_timestamp TEXT;")
                 if "count" not in cols:
                     self._conn.execute("ALTER TABLE audit_log ADD COLUMN count INTEGER NOT NULL DEFAULT 1;")
+                if "prev_hash" not in cols:
+                    self._conn.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT;")
+                if "entry_hash" not in cols:
+                    self._conn.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT;")
             except Exception:
                 pass
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_flag ON audit_log(flag_name);")
@@ -244,6 +251,20 @@ class GuardianStorage:
     # -------------------------------------------------------------------------
     # Audit Decisions & Pruning
     # -------------------------------------------------------------------------
+    @staticmethod
+    def _compute_audit_hash(
+        prev_hash: str,
+        timestamp: str,
+        flag_name: str,
+        from_state: str,
+        to_state: str,
+        decision: str,
+        reason: str,
+        numbers_json: str,
+    ) -> str:
+        payload = "|".join([prev_hash, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def record_audit(
         self,
         timestamp: str,
@@ -256,39 +277,77 @@ class GuardianStorage:
     ) -> int:
         numbers_json = json.dumps(numbers, default=str)
         with self._lock, self._conn:
-            # Collapse consecutive identical HOLD decisions
+            # Collapse consecutive identical HOLD decisions (only when it is the global tail row so chain stays intact)
             if decision == "HOLD":
                 last_cur = self._conn.execute(
-                    "SELECT id, decision, from_state, to_state, reason, count, first_timestamp FROM audit_log WHERE flag_name = ? ORDER BY id DESC LIMIT 1",
-                    (flag_name,),
+                    "SELECT id, timestamp, flag_name, decision, from_state, to_state, count, prev_hash FROM audit_log ORDER BY id DESC LIMIT 1",
                 )
                 last_row = last_cur.fetchone()
                 if (
                     last_row
+                    and last_row["flag_name"] == flag_name
                     and last_row["decision"] == "HOLD"
                     and last_row["from_state"] == from_state
                     and last_row["to_state"] == to_state
                 ):
                     current_count = int(last_row["count"] or 1) + 1
-                    first_ts = last_row["first_timestamp"] or timestamp
+                    prev_h = last_row["prev_hash"] or ("0" * 64)
+                    new_hash = self._compute_audit_hash(
+                        prev_h, last_row["timestamp"], flag_name, from_state, to_state, decision, reason, numbers_json
+                    )
                     self._conn.execute(
-                        "UPDATE audit_log SET count = ?, last_timestamp = ?, reason = ?, numbers_json = ? WHERE id = ?",
-                        (current_count, timestamp, reason, numbers_json, last_row["id"]),
+                        "UPDATE audit_log SET count = ?, last_timestamp = ?, reason = ?, numbers_json = ?, entry_hash = ? WHERE id = ?",
+                        (current_count, timestamp, reason, numbers_json, new_hash, last_row["id"]),
                     )
                     return last_row["id"]
 
+            tail_row = self._conn.execute("SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+            prev_hash = (tail_row["entry_hash"] if tail_row and tail_row["entry_hash"] else None) or ("0" * 64)
+            entry_hash = self._compute_audit_hash(
+                prev_hash, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json
+            )
             cur = self._conn.execute(
                 """
                 INSERT INTO audit_log (
-                    timestamp, first_timestamp, last_timestamp, count, flag_name, from_state, to_state, decision, reason, numbers_json
-                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                    timestamp, first_timestamp, last_timestamp, count, flag_name, from_state, to_state, decision, reason, numbers_json, prev_hash, entry_hash
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (timestamp, timestamp, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json),
+                (timestamp, timestamp, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json, prev_hash, entry_hash),
             )
             row_id = cur.lastrowid
             # Keep SQLite from growing without bound
             self._prune_audit_log_locked(max_entries=1000)
             return row_id
+
+    def verify_audit_chain(self) -> Dict[str, Any]:
+        """Verify tamper-evident SHA-256 hash chain across persisted audit_log rows."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json, prev_hash, entry_hash FROM audit_log ORDER BY id ASC"
+            ).fetchall()
+        expected_prev = None
+        checked = 0
+        for row in rows:
+            if not row["entry_hash"]:
+                continue
+            checked += 1
+            prev_h = row["prev_hash"] or ("0" * 64)
+            if expected_prev is not None and prev_h != expected_prev:
+                return {"valid": False, "checked_entries": checked, "broken_id": row["id"], "reason": f"Chain break at audit id={row['id']}"}
+            calc = self._compute_audit_hash(
+                prev_h,
+                row["timestamp"],
+                row["flag_name"],
+                row["from_state"],
+                row["to_state"],
+                row["decision"],
+                row["reason"],
+                row["numbers_json"],
+            )
+            if calc != row["entry_hash"]:
+                return {"valid": False, "checked_entries": checked, "broken_id": row["id"], "reason": f"Hash mismatch at audit id={row['id']}"}
+            expected_prev = row["entry_hash"]
+        return {"valid": True, "checked_entries": checked, "broken_id": None, "reason": "Audit hash chain verified"}
 
     def prune_audit_log(self, max_entries: int = 1000) -> None:
         with self._lock, self._conn:

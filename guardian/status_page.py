@@ -424,7 +424,10 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       <!-- Status Card -->
       <div class="card">
         <div class="card-title">
-          <span>Active Rollout State</span>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span>Active Rollout State</span>
+            <span id="op-status-pill" class="status-pill pill-advance">Monitoring</span>
+          </div>
           <span id="soak-info" class="mono" style="font-size: 12px; color: var(--text-muted);">Soak: -- / --</span>
         </div>
         <div class="metric-hero">
@@ -563,6 +566,18 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       </table>
       </div>
     </div>
+
+    <!-- Onboarding & Demo Info -->
+    <details class="card" style="margin-top: 24px;">
+      <summary style="cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">
+        ℹ️ About Flagsmith Guardian &amp; One-Command Local Demo
+      </summary>
+      <div style="margin-top: 12px; font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+        <p style="margin-bottom: 8px;"><strong style="color: var(--text-main);">Flagsmith Guardian</strong> automates canary rollouts for self-hosted Flagsmith flags with real-time error-rate guardrails, Bayesian experimentation + SRM gates, signed webhook drift detection, and instant 0% rollback.</p>
+        <p class="mono" style="font-size: 12px; color: #818cf8;">git clone https://github.com/Shubhamver45/flagsmith-guardian.git &amp;&amp; cd flagsmith-guardian &amp;&amp; docker compose -f compose.demo.yml up --build</p>
+        <p style="margin-top: 6px; font-size: 12px;">CLI: <code>guardian init</code> • <code>guardian doctor</code> • <code>guardian config validate</code> • <code>guardian rollout status</code> • <code>guardian audit verify</code></p>
+      </div>
+    </details>
   </div>
 
   <script>
@@ -599,6 +614,35 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       document.getElementById('state-display').innerText = data.state;
       document.getElementById('pct-display').innerText = data.percentage + '% Allocation';
       document.getElementById('flag-badge').innerText = 'Flagsmith Flag: ' + data.flag_name;
+
+      const opPill = document.getElementById('op-status-pill');
+      if (opPill) {
+        const grs = data.guardrails || [];
+        const hasBreach = grs.some(g => g.status === 'BREACH' || g.is_breached);
+        const hasErr = grs.some(g => g.status === 'ERROR');
+        if (data.state === 'ROLLED_BACK') {
+          opPill.className = 'status-pill pill-rollback';
+          opPill.innerText = 'Rollback confirmed';
+        } else if (hasBreach) {
+          opPill.className = 'status-pill pill-breached';
+          opPill.innerText = 'Guardrail breached';
+        } else if (hasErr) {
+          opPill.className = 'status-pill pill-breached';
+          opPill.innerText = 'Failed';
+        } else if (data.state === 'PAUSED') {
+          opPill.className = 'status-pill pill-insufficient';
+          opPill.innerText = 'Paused';
+        } else if (data.state === 'AWAITING_APPROVAL') {
+          opPill.className = 'status-pill pill-insufficient';
+          opPill.innerText = 'Approval required';
+        } else if (data.state === 'PROMOTED') {
+          opPill.className = 'status-pill pill-healthy';
+          opPill.innerText = 'Healthy';
+        } else {
+          opPill.className = 'status-pill pill-advance';
+          opPill.innerText = 'Monitoring';
+        }
+      }
       const fsLinkEl = document.getElementById('open-flagsmith-link');
       if (fsLinkEl) {
         const fsUrl = typeof data.flagsmith_ui_url === 'string' ? data.flagsmith_ui_url.trim() : '';

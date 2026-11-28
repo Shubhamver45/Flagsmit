@@ -269,6 +269,42 @@ def main():
     # Optional MCP server subcommand
     subparsers.add_parser("mcp", help="Run optional MCP server over stdio (requires guardian[mcp])")
 
+    # Doctor subcommand
+    doctor_parser = subparsers.add_parser("doctor", help="Check Python, config, Flagsmith, Prometheus, and DB readiness")
+    doctor_parser.add_argument("--config", default=os.environ.get("GUARDIAN_CONFIG_PATH", "config.yaml"), help="Path to Guardian YAML config")
+
+    # Config subcommand
+    cfg_parser = subparsers.add_parser("config", help="Configuration utilities")
+    cfg_sub = cfg_parser.add_subparsers(dest="config_action", required=True)
+    cfg_val = cfg_sub.add_parser("validate", help="Validate Guardian YAML configuration")
+    cfg_val.add_argument("--config", default=os.environ.get("GUARDIAN_CONFIG_PATH", "config.yaml"), help="Path to Guardian YAML config")
+
+    # Flags subcommand
+    flags_parser = subparsers.add_parser("flags", help="Discover Flagsmith feature flags")
+    flags_sub = flags_parser.add_subparsers(dest="flags_action", required=True)
+    flags_sub.add_parser("list", help="List feature flags from Guardian / Flagsmith")
+
+    # Rollout subcommand
+    rollout_parser = subparsers.add_parser("rollout", help="Manage rollouts (status, pause, resume)")
+    rollout_sub = rollout_parser.add_subparsers(dest="rollout_action", required=True)
+    ro_status = rollout_sub.add_parser("status", help="Get rollout status")
+    ro_status.add_argument("--flag", default=None, help="Target feature flag name")
+    ro_pause = rollout_sub.add_parser("pause", help="Pause an active rollout")
+    ro_pause.add_argument("--flag", default=None, help="Target feature flag name")
+    ro_resume = rollout_sub.add_parser("resume", help="Resume a paused rollout")
+    ro_resume.add_argument("--flag", default=None, help="Target feature flag name")
+
+    # Audit subcommand
+    audit_parser = subparsers.add_parser("audit", help="Inspect and verify audit trail")
+    audit_sub = audit_parser.add_subparsers(dest="audit_action", required=True)
+    aud_list = audit_sub.add_parser("list", help="List recent audit entries")
+    aud_list.add_argument("--limit", type=int, default=20, help="Maximum entries to display")
+    audit_sub.add_parser("verify", help="Verify tamper-evident audit hash chain")
+
+    # Demo subcommand
+    demo_parser = subparsers.add_parser("demo", help="Launch or inspect local Flagsmith Guardian demo")
+    demo_parser.add_argument("--serve", action="store_true", help="Keep demo stack running after walkthrough")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -322,6 +358,113 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    elif args.command == "config" and args.config_action == "validate":
+        from guardian.config import load_config
+        try:
+            cfg = load_config(args.config)
+            print(f"✔ Config valid: {args.config} ({len(cfg.rollouts)} rollout(s))")
+            for r in cfg.rollouts:
+                print(f"  • {r.flag_name}: stages={r.stages}, soak={r.soak_time_seconds}s, guardrails={len(r.guardrails)}")
+        except Exception as e:
+            print(f"❌ Invalid config ({args.config}): {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == "doctor":
+        _run_doctor(args.config)
+
+    elif args.command == "flags" and args.flags_action == "list":
+        res = call_api("/flagsmith/features", base_url=args.url, token=args.token)
+        feats = res.get("features") or res.get("results") or []
+        if not feats:
+            print("No feature flags found.")
+        for f in feats:
+            print(f"• {f.get('name')} (id={f.get('id')}, type={f.get('type', 'STANDARD')})")
+
+    elif args.command == "rollout":
+        if args.rollout_action == "status":
+            endpoint = f"/status?flag_name={args.flag}" if args.flag else "/status"
+            res = call_api(endpoint, base_url=args.url, token=args.token)
+            print(f"Flag: {res.get('flag_name')} | State: {res.get('state')} | Rollout: {res.get('percentage')}%")
+        elif args.rollout_action == "pause":
+            data = {"flag_name": args.flag} if args.flag else {}
+            res = call_api("/pause", base_url=args.url, data=data, token=args.token)
+            print(f"⏸️  {res.get('message')} (State: {res.get('current_state')})")
+        elif args.rollout_action == "resume":
+            data = {"flag_name": args.flag} if args.flag else {}
+            res = call_api("/resume", base_url=args.url, data=data, token=args.token)
+            print(f"▶️  {res.get('message')} (State: {res.get('current_state')})")
+
+    elif args.command == "audit":
+        if args.audit_action == "list":
+            res = call_api("/status", base_url=args.url, token=args.token)
+            entries = (res.get("timeline") or [])[-args.limit:]
+            for e in entries:
+                print(f"[{e.get('timestamp')}] {e.get('flag_name')} {e.get('from_state')} -> {e.get('to_state')} ({e.get('decision')}): {e.get('reason')}")
+        elif args.audit_action == "verify":
+            res = call_api("/audit/verify", base_url=args.url, token=args.token)
+            status_icon = "✔" if res.get("valid") else "❌"
+            print(f"{status_icon} {res.get('reason')} (checked={res.get('checked_entries')})")
+            if not res.get("valid"):
+                sys.exit(1)
+
+    elif args.command == "demo":
+        import subprocess
+        from pathlib import Path
+        script = Path("scripts/demo.sh")
+        if not script.exists():
+            print("Run `docker compose -f compose.demo.yml up --build` from a cloned Flagsmith Guardian repo.", file=sys.stderr)
+            sys.exit(1)
+        cmd = ["bash", str(script)] + (["--serve"] if args.serve else [])
+        sys.exit(subprocess.call(cmd))
+
+
+def _run_doctor(config_path: str) -> None:
+    """Run local diagnostic checks for Guardian readiness."""
+    from pathlib import Path
+    from guardian.config import load_config
+    from guardian.main import load_env_file
+
+    load_env_file()
+    print("🩺 Guardian Environment Doctor")
+    ok = True
+    print(f"  ✔ Python: {sys.version.split()[0]}")
+
+    if Path(config_path).exists():
+        try:
+            cfg = load_config(config_path)
+            print(f"  ✔ Config: {config_path} ({len(cfg.rollouts)} rollout(s))")
+        except Exception as e:
+            print(f"  ❌ Config invalid ({config_path}): {e}")
+            ok = False
+    else:
+        print(f"  ⚠️  Config not found: {config_path} (run `guardian init` or copy `guardian.example.yaml`)")
+
+    fs_url = os.environ.get("FLAGSMITH_URL", "")
+    if fs_url:
+        try:
+            req = urllib.request.Request(fs_url.rstrip("/") + "/")
+            with urllib.request.urlopen(req, timeout=4) as r:
+                print(f"  ✔ Flagsmith API reachable: {fs_url} (HTTP {r.status})")
+        except Exception as e:
+            print(f"  ⚠️  Flagsmith API unreachable ({fs_url}): {e}")
+    else:
+        print("  ⚠️  FLAGSMITH_URL not set")
+
+    prom_url = os.environ.get("PROMETHEUS_URL", "")
+    if prom_url:
+        try:
+            with urllib.request.urlopen(prom_url.rstrip("/") + "/-/healthy", timeout=4) as r:
+                print(f"  ✔ Prometheus reachable: {prom_url} (HTTP {r.status})")
+        except Exception as e:
+            print(f"  ⚠️  Prometheus unreachable ({prom_url}): {e}")
+
+    token_set = bool(os.environ.get("GUARDIAN_API_TOKEN"))
+    secret_set = bool(os.environ.get("FLAGSMITH_WEBHOOK_SECRET"))
+    print(f"  {'✔' if token_set else '⚠️ '} GUARDIAN_API_TOKEN: {'set' if token_set else 'unset (required in production)'}")
+    print(f"  {'✔' if secret_set else '⚠️ '} FLAGSMITH_WEBHOOK_SECRET: {'set' if secret_set else 'unset (required in production)'}")
+    if not ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
