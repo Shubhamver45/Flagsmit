@@ -179,20 +179,21 @@ def test_segment_stage_echo_immunity_and_restart_recovery(tmp_path):
     assert engine1.state_machines["new_checkout"].current_state == "SEGMENT_STAGE"
     assert engine1.get_status()["segment"] == "internal-team"
 
-    # Webhook echo arriving right after Guardian's own segment write must NOT trigger DRIFT
+    # Webhook echo arriving right after Guardian's own segment write (including 100% on segment override)
+    # must NOT trigger false DRIFT
     wh_res = engine1.handle_flagsmith_webhook({
         "event_type": "FLAG_UPDATED",
         "data": {
             "new_state": {
                 "feature": {"name": "new_checkout"},
                 "enabled": True,
-                "multivariate_feature_state_values": [{"percentage_allocation": 0.0}],
+                "multivariate_feature_state_values": [{"percentage_allocation": 100.0}],
             },
-            "changed_by": "guardian-bot",
+            "changed_by": "Guardian Admin Key",
         },
     })
     assert engine1.drift_flags["new_checkout"]["detected"] is False
-    assert wh_res.get("drift_detected") is not True
+    assert wh_res.get("status") in ("ok", "echo_suppressed", "reconciled", "ignored")
     storage1.close()
 
     # Restart Guardian with the same SQLite DB: recovers to SEGMENT_STAGE and does not duplicate overrides

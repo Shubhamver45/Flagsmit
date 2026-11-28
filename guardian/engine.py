@@ -646,6 +646,7 @@ class GuardianEngine:
                 if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
                     if new_state == RolloutState.SEGMENT_STAGE.value and rc.segment:
                         self.storage.record_write(flag_name, 0.0, written_at=now)
+                        self.storage.record_write(flag_name, 100.0, written_at=now)
                         self.flagsmith_client.enable_segment_override(
                             flag_name,
                             rc.segment,
