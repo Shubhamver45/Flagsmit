@@ -183,7 +183,7 @@ def check_cli_commands(readme_content: str) -> bool:
     print("\n==> Checking documented CLI commands...")
     # Check commands mentioned like `guardian <subcmd>` or `python3 -m guardian.cli <subcmd>`
     cli_matches = re.findall(r'`(?:python3 -m )?guardian(?:\.cli)? ([a-z]+)[^`]*`', readme_content)
-    valid_subcommands = {"init", "approve", "status", "rollback", "reset"}
+    valid_subcommands = {"init", "approve", "status", "rollback", "reset", "mcp"}
 
     all_ok = True
     seen = set()

@@ -53,6 +53,13 @@ Guardian relies directly on Flagsmith's core architecture across all critical pa
 | **Experimentation Results** | `guardian/metrics/flagsmith_exp.py:FlagsmithExperimentMetricSource.evaluate`, `guardian/metrics/flagsmith_exp.py:FlagsmithExperimentMetricSource._fetch_results` | **Yes** | Queries Flagsmith's Bayesian experimentation engine (`/api/v1/environments/{key}/experiments/{id}/results/`) for chance-to-be-worse, chance-to-win, and credible intervals. |
 | **Sample Ratio Mismatch (SRM)** | `guardian/metrics/flagsmith_exp.py:FlagsmithExperimentMetricSource.evaluate`, `guardian/engine.py:GuardianEngine.check_approval_eligibility` | **Yes** | Evaluates Flagsmith's chi-squared SRM test (`srm_p_value < 0.001`). If traffic distribution is corrupted, Guardian flags a warning and blocks human promotion approval. |
 | **Environment Webhooks** | `guardian/api.py:create_app`, `scripts/setup_flagsmith.py:setup_via_admin_api` | **Yes** | Registers environment webhooks to `POST /webhooks/flagsmith` and ingests `FLAG_UPDATED` payloads verified with `X-Flagsmith-Signature` HMAC-SHA256 to detect out-of-band drift within seconds. |
+| **Segments (optional)** | `guardian/flagsmith_client.py:FlagsmithAdminClient.enable_segment_override`, `guardian/flagsmith_client.py:FlagsmithAdminClient.remove_segment_override` | **No** *(optional)* | Used only for the optional pre-percentage `SEGMENT_STAGE` to create/remove a Flagsmith segment override before percentage stages begin. |
+
+### Optional Features (Off by Default)
+Each of the following capabilities is **optional and off by default** — existing Prometheus + Flagsmith rollouts and demos are unchanged unless configured:
+* **Push Metrics (No Prometheus Required)**: Send request/error counts directly to `POST /metrics/ingest` (`metric_source: push`) — see [Bring Your Own App](docs/bring-your-own-app.md).
+* **MCP Server (`guardian mcp`)**: Optional `flagsmith-guardian[mcp]` extra for coding agents (strictly without 100% approval capability) — see [MCP Integration](docs/mcp.md).
+* **Segment Rollout Stage (`segment`)**: Target a Flagsmith segment (e.g., `internal-team`) before percentage stages begin — see [Optional Segment Stage](docs/segment-stage.md).
 
 ---
 
