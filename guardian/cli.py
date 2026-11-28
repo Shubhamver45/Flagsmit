@@ -266,6 +266,9 @@ def main():
     reset_parser = subparsers.add_parser("reset", help="Reset rollout back to initial PENDING state (demo use)")
     reset_parser.add_argument("--flag", default=None, help="Target feature flag name")
 
+    # Optional MCP server subcommand
+    subparsers.add_parser("mcp", help="Run optional MCP server over stdio (requires guardian[mcp])")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -307,6 +310,18 @@ def main():
         res = call_api("/reset", base_url=args.url, data=data, token=args.token)
         print(f"🔄 Reset: {res.get('message')}")
         print(f"State: {res.get('current_state')} | Rollout: {res.get('current_percentage')}%")
+
+    elif args.command == "mcp":
+        try:
+            from guardian.mcp_server import run_mcp_server
+            run_mcp_server(base_url=args.url, api_token=args.token)
+        except ImportError:
+            print(
+                "Error: optional MCP dependencies are not installed. "
+                "Install them with: pip install 'flagsmith-guardian[mcp]'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 
 if __name__ == "__main__":
