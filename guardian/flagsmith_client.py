@@ -177,7 +177,8 @@ class FlagsmithAdminClient:
 
         if len(mv_values) == 1:
             mv_id = mv_values[0]["id"]
-            mv_opt_id = mv_values[0]["multivariate_feature_option"]
+            mv_opt = mv_values[0]["multivariate_feature_option"]
+            mv_opt_id = mv_opt["id"] if isinstance(mv_opt, dict) else mv_opt
             payload = {
                 "environment": env_id,
                 "enabled": True if percentage > 0 else fs.get("enabled", True),
@@ -209,6 +210,11 @@ class FlagsmithAdminClient:
 
         url = f"{self.api_url}/features/featurestates/{fs_id}/"
         resp = self.session.patch(url, json=payload, timeout=self.timeout)
+        if resp.status_code in (404, 405) and self.environment_key:
+            env_url = f"{self.api_url}/environments/{self.environment_key}/featurestates/{fs_id}/"
+            resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
+        if not resp.ok:
+            logger.error("Flagsmith PATCH %s failed (%s): %s", url, resp.status_code, resp.text[:500])
         resp.raise_for_status()
         return resp.json()
 
@@ -225,7 +231,8 @@ class FlagsmithAdminClient:
 
         if len(mv_values) == 1:
             mv_id = mv_values[0]["id"]
-            mv_opt_id = mv_values[0]["multivariate_feature_option"]
+            mv_opt = mv_values[0]["multivariate_feature_option"]
+            mv_opt_id = mv_opt["id"] if isinstance(mv_opt, dict) else mv_opt
             payload = {
                 "environment": env_id,
                 "enabled": False,
@@ -245,6 +252,11 @@ class FlagsmithAdminClient:
 
         url = f"{self.api_url}/features/featurestates/{fs_id}/"
         resp = self.session.patch(url, json=payload, timeout=self.timeout)
+        if resp.status_code in (404, 405) and self.environment_key:
+            env_url = f"{self.api_url}/environments/{self.environment_key}/featurestates/{fs_id}/"
+            resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
+        if not resp.ok:
+            logger.error("Flagsmith rollback PATCH %s failed (%s): %s", url, resp.status_code, resp.text[:500])
         resp.raise_for_status()
         return resp.json()
 

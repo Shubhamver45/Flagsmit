@@ -690,7 +690,28 @@ class GuardianEngine:
                         )
                     else:
                         self.storage.record_write(flag_name, pct, written_at=now)
-                        self.flagsmith_client.set_percentage_rollout(flag_name, pct)
+                        try:
+                            self.flagsmith_client.set_percentage_rollout(flag_name, pct)
+                        except Exception as write_err:
+                            # Revert SQLite + state machine if Flagsmith rejected the transition
+                            sm.restore_state(
+                                current_state=prev_state,
+                                current_stage_index=max(-1, sm.current_stage_index - 1) if prev_state != new_state else sm.current_stage_index,
+                                stage_entered_at=sm.stage_entered_at,
+                                is_approved=sm.is_approved,
+                            )
+                            self.storage.save_rollout_state(
+                                flag_name=flag_name,
+                                current_state=prev_state,
+                                current_stage_index=sm.current_stage_index,
+                                stage_entered_at=sm.stage_entered_at,
+                                current_percentage=prev_pct,
+                                is_approved=sm.is_approved,
+                                drift_detected=False,
+                                drift_details=None,
+                                now=now,
+                            )
+                            raise write_err
                 elif decision == RolloutDecision.ROLLBACK:
                     self.storage.record_write(flag_name, 0.0, written_at=now)
                     self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
