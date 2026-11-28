@@ -35,6 +35,10 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     }
     
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      max-width: 100%;
+      overflow-x: hidden;
+    }
     body {
       background-color: var(--bg-dark);
       color: var(--text-main);
@@ -44,12 +48,14 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       -webkit-font-smoothing: antialiased;
     }
     
-    .container { max-width: 1200px; margin: 0 auto; }
+    .container { width: 100%; max-width: 1200px; margin: 0 auto; }
     
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
       margin-bottom: 24px;
       padding-bottom: 16px;
       border-bottom: 1px solid var(--card-border);
@@ -57,7 +63,21 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     .logo {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      min-width: 0;
+    }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
       gap: 12px;
+      max-width: 100%;
+    }
+    .banner-awaiting > div {
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
     }
     .logo h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
     .logo span {
@@ -90,14 +110,18 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
     }
     
-    .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 24px; }
-    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+    .grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 20px; margin-bottom: 24px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
     
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 12px;
       padding: 20px;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      overflow: hidden;
     }
     .card-title {
       font-size: 14px;
@@ -109,10 +133,13 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
     }
     .metric-hero {
       display: flex;
       align-items: baseline;
+      flex-wrap: wrap;
       gap: 12px;
       margin-bottom: 16px;
     }
@@ -136,6 +163,9 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       justify-content: space-between;
       position: relative;
       margin: 24px 0 8px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+      gap: 8px;
     }
     .stepper::before {
       content: '';
@@ -154,6 +184,8 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       flex-direction: column;
       align-items: center;
       gap: 6px;
+      flex: 1 0 auto;
+      min-width: 54px;
     }
     .step-circle {
       width: 30px;
@@ -212,6 +244,9 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       justify-content: center;
       gap: 8px;
       border: 1px solid transparent;
+      max-width: 100%;
+      white-space: normal;
+      text-align: center;
     }
     .btn-approve {
       background: rgba(16, 185, 129, 0.15);
@@ -249,8 +284,14 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     }
     
     /* Tables */
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
     table {
       width: 100%;
+      min-width: 580px;
       border-collapse: collapse;
       font-size: 13px;
     }
@@ -299,6 +340,30 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      max-width: 100%;
+    }
+    .banner-awaiting > div {
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    .actions-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      .card { padding: 14px; }
+      .state-badge { font-size: 20px; word-break: break-word; }
+      .pct-badge { font-size: 14px; padding: 3px 10px; }
+      .step-circle { width: 26px; height: 26px; font-size: 10px; }
+      .step-label { font-size: 9px; }
+    }
+    @media (max-width: 480px) {
+      .actions-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -310,7 +375,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         <span id="flag-badge">Flagsmith Flag: new_checkout</span>
         <a id="open-flagsmith-link" href="#" target="_blank" rel="noopener noreferrer" style="display: none; font-size: 12px; color: #818cf8; text-decoration: none; border: 1px solid rgba(99,102,241,0.35); padding: 3px 10px; border-radius: 9999px;">Open in Flagsmith ↗</a>
       </div>
-      <div style="display: flex; align-items: center; gap: 12px;">
+      <div class="header-controls">
         <div style="display: flex; align-items: center; gap: 6px; background: var(--card-bg); border: 1px solid var(--card-border); padding: 4px 10px; border-radius: 9999px;">
           <input id="operator-token-input" type="password" placeholder="Operator Token" style="background: transparent; border: none; color: var(--text-main); font-size: 12px; width: 120px; outline: none;" />
           <button onclick="saveOperatorToken()" style="background: rgba(99,102,241,0.2); color: #818cf8; border: none; border-radius: 9999px; padding: 2px 8px; font-size: 11px; cursor: pointer;">Set</button>
@@ -380,7 +445,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <button id="btn-approve-action" class="btn-approve" onclick="handleApprove()" disabled>
             ✅ Approve Final Promotion
           </button>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="actions-row">
             <button id="btn-pause-action" class="btn-tick" onclick="handlePause()" style="color: #fbbf24; border-color: rgba(251, 191, 36, 0.35);">
               ⏸️ Pause Rollout
             </button>
@@ -435,6 +500,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
     <!-- Guardrails -->
     <div class="card" style="margin-bottom: 24px;">
       <div class="card-title">Guardrail Metrics</div>
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -451,6 +517,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Loading metrics...</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <!-- Incidents Intelligence -->
@@ -459,6 +526,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         <span>🚨 Incident Intelligence</span>
         <span id="incidents-count-badge" class="mono" style="font-size: 12px; color: var(--text-muted);">0 recorded</span>
       </div>
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -473,11 +541,13 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No production incidents recorded</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <!-- Timeline -->
     <div class="card">
       <div class="card-title">Decision Timeline & Audit Trail</div>
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -491,6 +561,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
           <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Loading audit timeline...</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 
