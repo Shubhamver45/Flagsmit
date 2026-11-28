@@ -90,6 +90,29 @@ class AlertDispatcher:
             ],
         }
 
+        if entry.decision == "AWAIT_APPROVAL":
+            payload["blocks"].append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Approve 100%"},
+                            "style": "primary",
+                            "action_id": "guardian_approve",
+                            "value": entry.flag_name,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Rollback to 0%"},
+                            "style": "danger",
+                            "action_id": "guardian_rollback",
+                            "value": entry.flag_name,
+                        },
+                    ],
+                }
+            )
+
         try:
             resp = self.session.post(self.slack_webhook_url, json=payload, timeout=5)
             if resp.status_code >= 400:

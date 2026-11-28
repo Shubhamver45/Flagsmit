@@ -179,9 +179,14 @@ def build_engine(
         environment_id=cfg.environment_id or (int(os.environ["FLAGSMITH_ENVIRONMENT_ID"]) if os.environ.get("FLAGSMITH_ENVIRONMENT_ID") else None),
     )
 
+    from guardian.metrics.datadog import DatadogMetricSource
+    from guardian.metrics.cloudwatch import CloudWatchMetricSource
+
     provider = CompositeMetricProvider()
     provider.register_source("prometheus", PrometheusMetricSource(prometheus_url=prometheus_url))
     provider.register_source("push", PushMetricSource())
+    provider.register_source("datadog", DatadogMetricSource())
+    provider.register_source("cloudwatch", CloudWatchMetricSource())
     provider.register_source(
         "flagsmith_experiment",
         FlagsmithExperimentMetricSource(

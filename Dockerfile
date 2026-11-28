@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy Guardian source and configs (tracked in git; no secrets baked into image)
 COPY guardian/ ./guardian/
 COPY config.example.yaml ./config.example.yaml
+COPY config.render.yaml ./config.render.yaml
 RUN pip install --no-cache-dir -e .
 
 # Create writable data directory for SQLite persistence with non-root ownership

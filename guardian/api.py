@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Security, Depends, status, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -31,7 +32,7 @@ logger = logging.getLogger("guardian.api")
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Rejects request bodies exceeding maximum allowed byte size (413 Payload Too Large)."""
+    """Rejects request bodies exceeding maximum allowed byte size (413 Payload Too Large), including chunked requests."""
     def __init__(self, app, max_content_length: int = 65536):
         super().__init__(app)
         self.max_content_length = max_content_length
@@ -47,6 +48,18 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                     )
             except ValueError:
                 pass
+        if request.method in ("POST", "PUT", "PATCH"):
+            chunks: List[bytes] = []
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > self.max_content_length:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Request entity too large. Maximum allowed size is {self.max_content_length} bytes."},
+                    )
+                chunks.append(chunk)
+            request._body = b"".join(chunks)
         return await call_next(request)
 
 
@@ -110,6 +123,10 @@ class ResumeRequest(BaseModel):
     flag_name: Optional[str] = None
 
 
+class SessionLoginRequest(BaseModel):
+    token: str
+
+
 def create_app(
     engine: GuardianEngine,
     api_token: Optional[str] = None,
@@ -123,6 +140,23 @@ def create_app(
     )
 
     app.add_middleware(RequestSizeLimitMiddleware, max_content_length=65536)
+
+    cors_raw = os.environ.get("GUARDIAN_CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080")
+    cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip() and o.strip() != "*"]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "X-API-Token", "X-Guardian-Token", "X-CSRF-Token"],
+        )
+
+    _seen_webhook_digests: Dict[str, float] = {}
+    _webhook_lock = threading.Lock()
+    _operator_sessions: Dict[str, Dict[str, Any]] = {}
+    _session_lock = threading.Lock()
+    _SESSION_TTL_SECONDS = 3600
 
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -162,6 +196,24 @@ def create_app(
         if header_token and secrets.compare_digest(header_token, expected_token):
             return True
 
+        # 3. HttpOnly short-lived session cookie + CSRF header check for state-changing methods
+        sess_id = request.cookies.get("guardian_session")
+        if sess_id:
+            now_ts = time.time()
+            with _session_lock:
+                sess = _operator_sessions.get(sess_id)
+                if sess and now_ts < sess["expires_at"]:
+                    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                        csrf_hdr = request.headers.get("X-CSRF-Token", "")
+                        if not csrf_hdr or not secrets.compare_digest(csrf_hdr, sess["csrf_token"]):
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Forbidden: Missing or invalid X-CSRF-Token header",
+                            )
+                    return True
+                elif sess:
+                    _operator_sessions.pop(sess_id, None)
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized: Invalid or missing API token",
@@ -170,11 +222,62 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        # Security: Never inject server-side secrets into served HTML.
-        # The dashboard reads the operator token from localStorage only.
-        # Set it via the token input field in the UI or via browser console:
-        #   localStorage.setItem('guardian_token', '<your-token>')
+        # Security: Never inject server-side secrets into served HTML or store tokens in localStorage.
         return STATUS_PAGE_HTML
+
+    @app.post("/auth/session", dependencies=[Depends(rate_limit_write_endpoints)])
+    def create_session(payload: SessionLoginRequest, request: Request) -> JSONResponse:
+        expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+        if is_prod and not expected_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GUARDIAN_API_TOKEN not configured")
+        if expected_token and not secrets.compare_digest(payload.token.strip(), expected_token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid operator token")
+
+        sess_id = secrets.token_urlsafe(32)
+        csrf_token = secrets.token_urlsafe(24)
+        with _session_lock:
+            now_ts = time.time()
+            expired = [k for k, v in _operator_sessions.items() if now_ts >= v["expires_at"]]
+            for k in expired:
+                _operator_sessions.pop(k, None)
+            _operator_sessions[sess_id] = {
+                "csrf_token": csrf_token,
+                "expires_at": now_ts + _SESSION_TTL_SECONDS,
+            }
+
+        is_secure = is_prod or request.url.scheme == "https"
+        resp = JSONResponse({"authenticated": True, "expires_in": _SESSION_TTL_SECONDS, "csrf_token": csrf_token})
+        resp.set_cookie(
+            key="guardian_session",
+            value=sess_id,
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=_SESSION_TTL_SECONDS,
+            path="/",
+        )
+        resp.set_cookie(
+            key="guardian_csrf",
+            value=csrf_token,
+            httponly=False,
+            samesite="lax",
+            secure=is_secure,
+            max_age=_SESSION_TTL_SECONDS,
+            path="/",
+        )
+        return resp
+
+    @app.delete("/auth/session")
+    def delete_session(request: Request) -> JSONResponse:
+        sess_id = request.cookies.get("guardian_session")
+        if sess_id:
+            with _session_lock:
+                _operator_sessions.pop(sess_id, None)
+        resp = JSONResponse({"authenticated": False})
+        resp.delete_cookie("guardian_session", path="/")
+        resp.delete_cookie("guardian_csrf", path="/")
+        return resp
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
@@ -260,6 +363,35 @@ def create_app(
         else:
             logger.info("ℹ [DEMO/OPEN MODE] Webhook processed without signature verification (no secret configured)")
 
+        ts_header = request.headers.get("X-Flagsmith-Timestamp") or request.headers.get("x-flagsmith-timestamp")
+        if ts_header:
+            try:
+                if abs(time.time() - float(ts_header)) > 300:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Webhook rejected: stale X-Flagsmith-Timestamp (>300s)",
+                    )
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid X-Flagsmith-Timestamp header",
+                )
+
+        if secret and raw_body:
+            digest = hashlib.sha256(raw_body + (ts_header or "").encode("utf-8")).hexdigest()
+            now_ts = time.time()
+            with _webhook_lock:
+                # Prune digests older than 5 minutes
+                stale = [k for k, v in _seen_webhook_digests.items() if now_ts - v > 300]
+                for k in stale:
+                    _seen_webhook_digests.pop(k, None)
+                if ts_header and digest in _seen_webhook_digests:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Webhook replay detected",
+                    )
+                _seen_webhook_digests[digest] = now_ts
+
         try:
             payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
         except Exception as e:
@@ -269,6 +401,83 @@ def create_app(
             )
 
         return engine.handle_flagsmith_webhook(payload)
+
+    @app.get("/audit/verify")
+    def verify_audit_chain() -> Dict[str, Any]:
+        """Verify tamper-evident SHA-256 hash chain over persisted audit log entries."""
+        return engine.storage.verify_audit_chain()
+
+    @app.post(
+        "/webhooks/slack",
+        dependencies=[Depends(rate_limit_write_endpoints)],
+    )
+    async def slack_interactive_webhook(request: Request) -> Dict[str, Any]:
+        """
+        Handles Slack Block Kit interactive button callbacks (guardian_approve, guardian_rollback).
+        Always fails closed unless SLACK_SIGNING_SECRET is configured and X-Slack-Signature verifies.
+        """
+        signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "").strip()
+        if not signing_secret:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Slack interactivity disabled: SLACK_SIGNING_SECRET is not configured",
+            )
+
+        ts_header = request.headers.get("X-Slack-Request-Timestamp", "").strip()
+        sig_header = request.headers.get("X-Slack-Signature", "").strip()
+        if not ts_header or not sig_header:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing Slack signature headers",
+            )
+        try:
+            ts_int = int(ts_header)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Slack timestamp")
+        if abs(time.time() - ts_int) > 300:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Stale Slack request timestamp")
+
+        raw_body = await request.body()
+        basestring = f"v0:{ts_header}:{raw_body.decode('utf-8', errors='replace')}".encode("utf-8")
+        expected = "v0=" + hmac.new(signing_secret.encode("utf-8"), basestring, hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(expected, sig_header):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-Slack-Signature")
+
+        from urllib.parse import parse_qs
+        body_text = raw_body.decode("utf-8", errors="replace")
+        try:
+            if body_text.lstrip().startswith("{"):
+                payload = json.loads(body_text)
+            else:
+                form = parse_qs(body_text)
+                payload = json.loads(form.get("payload", ["{}"])[0])
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid Slack payload: {e}")
+
+        actions = payload.get("actions") or []
+        if not actions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing Slack action")
+
+        action = actions[0]
+        action_id = action.get("action_id", "")
+        flag_name = action.get("value") or None
+        user_obj = payload.get("user") or {}
+        operator = f"slack:{user_obj.get('username') or user_obj.get('id') or 'operator'}"
+
+        if action_id == "guardian_approve":
+            try:
+                res = engine.approve(flag_name=flag_name)
+                return {"response_type": "in_channel", "text": f"Approved 100% promotion for `{res.flag_name}` by {operator}."}
+            except ValueError as e:
+                return {"response_type": "ephemeral", "text": f"Approval blocked: {e}"}
+        elif action_id == "guardian_rollback":
+            res = engine.manual_rollback(
+                flag_name=flag_name,
+                reason=f"Rollback triggered via Slack interactive button by {operator}",
+            )
+            return {"response_type": "in_channel", "text": f"Rolled back `{res.flag_name}` to 0% by {operator}."}
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported Slack action_id: {action_id}")
 
     def _is_request_authenticated(request: Request) -> bool:
         expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")

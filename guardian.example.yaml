@@ -1,0 +1,70 @@
+# =============================================================================
+# Flagsmith Guardian — Example Production Configuration (guardian.example.yaml)
+# =============================================================================
+# Environment variables (recommended in .env or secret manager, never committed):
+#   FLAGSMITH_URL="http://localhost:8000/api/v1"
+#   FLAGSMITH_ADMIN_API_KEY="<your-flagsmith-admin-key>"
+#   FLAGSMITH_ENVIRONMENT_KEY="<your-flagsmith-environment-key>"
+#   GUARDIAN_API_TOKEN="<strong-random-operator-token>"
+#   FLAGSMITH_WEBHOOK_SECRET="<hmac-sha256-webhook-secret>"
+#   PROMETHEUS_URL="http://localhost:9090"
+
+flag_name: "new_checkout"
+# Optional: override environment key (defaults to FLAGSMITH_ENVIRONMENT_KEY env var)
+environment_key: ""
+
+# Progressive canary allocation percentages (ascending, ending at 100)
+stages:
+  - 1
+  - 5
+  - 25
+  - 100
+
+# Minimum healthy soak duration (seconds) before advancing to the next stage
+soak_time_seconds: 300
+
+# Require explicit human operator approval before promoting to the final stage (100%)
+require_approval_before_final: true
+
+# Experimentation policy:
+#   false (default): block approval if chance-to-be-worse > threshold or SRM triggers
+#   true: require decisive winner (chance_to_win >= 95% and 95% CI low > 0)
+require_winner: false
+
+# Out-of-band drift detection settings
+reconcile_interval: 10.0
+echo_window_seconds: 30.0
+in_flight_grace_seconds: 5.0
+
+# Optional pre-percentage segment stage (targets segment at 0% before stage 1)
+# segment: "internal-team"
+
+guardrails:
+  # 1. Operational error-rate guardrail (Prometheus PromQL)
+  - name: "new_flow_error_rate"
+    metric_source: "prometheus"
+    comparison: ">"
+    threshold: 5.0
+    query: "((sum(rate(checkout_errors_total{variant='new_flow'}[1m])) or vector(0)) / (sum(rate(checkout_requests_total{variant='new_flow'}[1m])) > 0 or vector(1))) * 100"
+    sample_size_query: "sum(checkout_requests_total)"
+    min_samples: 50
+    description: "Automatic 0% rollback if error rate exceeds 5.0%"
+
+  # 2. Alternative: Push metrics guardrail (no Prometheus required; POST /metrics/ingest)
+  # - name: "checkout_push_error_rate"
+  #   metric_source: "push"
+  #   metric: "checkout"
+  #   comparison: ">"
+  #   threshold: 5.0
+  #   min_samples: 30
+  #   window_seconds: 60
+
+  # 3. Flagsmith Experimentation + Sample Ratio Mismatch (SRM) gate
+  - name: "checkout_ab_chance_to_be_worse"
+    metric_source: "flagsmith_experiment"
+    metric_id: 1
+    comparison: ">"
+    threshold: 10.0
+    min_samples: 50
+    action_on_srm: "HOLD"
+    description: "Block promotion if chance-to-be-worse > 10.0% or SRM p-value < 0.001"
