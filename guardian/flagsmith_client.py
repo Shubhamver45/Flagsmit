@@ -210,12 +210,15 @@ class FlagsmithAdminClient:
 
         url = f"{self.api_url}/features/featurestates/{fs_id}/"
         resp = self.session.patch(url, json=payload, timeout=self.timeout)
-        if resp.status_code in (404, 405) and self.environment_key:
+        if not resp.ok and self.environment_key:
             env_url = f"{self.api_url}/environments/{self.environment_key}/featurestates/{fs_id}/"
-            resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
+            env_resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
+            if env_resp.ok:
+                return env_resp.json()
         if not resp.ok:
-            logger.error("Flagsmith PATCH %s failed (%s): %s", url, resp.status_code, resp.text[:500])
-        resp.raise_for_status()
+            msg = f"Flagsmith PATCH {url} failed ({resp.status_code}): {resp.text[:300]}"
+            logger.error(msg)
+            raise RuntimeError(msg)
         return resp.json()
 
     def rollback_to_zero(self, flag_name: str, reason: str = "") -> Dict[str, Any]:

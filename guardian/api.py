@@ -703,7 +703,10 @@ def create_app(
         dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
     )
     def trigger_tick(flag: Optional[str] = Query(None, alias="flag_name")) -> Dict[str, Any]:
-        entry = engine.tick(flag_name=flag)
+        try:
+            entry = engine.tick(flag_name=flag)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
         return {
             "status": "ok",
             "current_state": engine.current_state,
