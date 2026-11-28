@@ -8,6 +8,9 @@
 [![CI](https://github.com/shubhamver45/flagsmith-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/shubhamver45/flagsmith-guardian/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Guardian Live Dashboard — SRM Approval Blocked](docs/img/live_srm_blocked.png)
+*Captured from a live `./scripts/demo.sh --serve` run (simulated traffic).*
+
 ---
 
 ## 1. Problem & Who It's For
@@ -291,7 +294,7 @@ Guardian configuration is defined via `config.yaml` or environment overrides.
 | `flag_name` | string | *required* | Target feature flag name in Flagsmith. |
 | `environment_key` | string | `""` | Flagsmith client environment key (defaults to `.env`). |
 | `stages` | list[int] | `[1, 5, 25, 100]` | Ordered canary rollout percentages (units: 0 to 100%). |
-| `soak_time_seconds` | int | `30` | Minimum soak duration in seconds per stage before advancement eligibility. |
+| `soak_time_seconds` | int | `30` | Minimum soak duration in seconds per stage before advancement eligibility (the Section 5 production YAML example uses `300`; demo mode overrides via `DEMO_SOAK_SECONDS`). |
 | `require_approval_before_final` | bool | `true` | Gate final stage behind human operator approval. |
 | `require_winner` | bool | `false` | Gate semantics: if true, requires chance to win $\ge 95\%$ and credible interval low $> 0$. |
 | `reconcile_interval` | float | `10.0` | Background polling interval in seconds to detect out-of-band flag changes. |
@@ -319,6 +322,9 @@ For managing multiple feature rollouts simultaneously:
 | :--- | :---: | :---: | :--- |
 | `db_path` | string | `./data/guardian.db` | Path to persistent SQLite database file. |
 | `rollouts` | list | `[]` | List of rollout configuration dictionaries, each following the schema above. |
+
+> [!NOTE]
+> **Demo vs. Reference Defaults**: `config.demo.yaml` is tuned for fast interactive demos (`reconcile_interval: 2.0`, `require_winner: true`, `min_samples: 25`, `threshold: 5.0`, and `soak_time_seconds` overridden to `3–5s` in `--demo-mode`), which differs from `config.example.yaml` (`reconcile_interval: 10.0`, `require_winner: false`, `soak_time_seconds: 30`) and the Section 5 production example (`soak_time_seconds: 300`).
 
 ---
 
@@ -366,10 +372,10 @@ Factual chronological progression reconstructed from `git log --date=short`:
 * **2026-11-20**: Initial infrastructure and prototype feasibility spike; Docker Compose with self-hosted Flagsmith, PostgreSQL, Task Processor, and Prometheus; initial state machine, Prometheus PromQL metric provider, and Flask demo app.
 * **2026-11-21**: Accelerated demo execution soak calibration and autonomous daemon loop verification.
 * **2026-11-22**: Hardening and API security; API token authentication on write endpoints; dynamic environment resolution; integration with live Flagsmith Experimentation API and SRM chi-squared gating.
-* **2026-11-27**: Added `PAUSED` rollout state (`POST /pause`, `POST /resume`), structured **Incident Intelligence** (`guardian/incident.py`, `GET /incidents`), Flagsmith project/environment/feature discovery endpoints (`/flagsmith/*`), `/ready` readiness probe, HTTP retry/timeouts on Flagsmith Admin API calls, `.env.example`, and removed server-side token injection from `guardian/api.py`.
 * **2026-11-23**: CLI operator interface (`guardian init`, `approve`, `rollback`, `reset`, `status`); GitHub Container Registry (GHCR) publishing pipeline and automated CI test matrix (Python 3.11 & 3.12); fast Prometheus rate window guardrail.
 * **2026-11-24**: SQLite transactional persistence replacing in-memory state; concurrent multi-rollout support; automated setup via Flagsmith public Admin API (`setup_flagsmith.py`) with masked credentials; Flagsmith warehouse connection verification.
-* **2026-11-25**: Real-time Flagsmith environment webhooks with constant-time HMAC-SHA256 signature verification; drift reconciliation with write ledger echo immunity; non-root container packaging (`UID 10001`); request size limits (64KB), sliding-window rate limiting (60 req/min), secret log redacting, and end-to-end 5-run empirical performance benchmarking.
+* **2026-11-25**: Real-time Flagsmith environment webhooks with constant-time HMAC-SHA256 signature verification; drift reconciliation with write ledger echo immunity; non-root container packaging (`UID 10001`); request size limits (64KB), sliding-window rate limiting (60 req/min), secret log redacting, and end-to-end six-run empirical performance benchmarking.
+* **2026-11-27**: Added `PAUSED` rollout state (`POST /pause`, `POST /resume`), structured **Incident Intelligence** (`guardian/incident.py`, `GET /incidents`), Flagsmith project/environment/feature discovery endpoints (`/flagsmith/*`), `/ready` readiness probe, HTTP retry/timeouts on Flagsmith Admin API calls, `.env.example`, and removed server-side token injection from `guardian/api.py`.
 
 ---
 
