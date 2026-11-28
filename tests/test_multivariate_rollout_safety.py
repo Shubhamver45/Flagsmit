@@ -36,10 +36,10 @@ def _make_multivariate_fs(enabled: bool = True, weights=(25.0, 25.0, 25.0)):
     }
 
 
-def _client_with_fs(fs_payload: dict):
+def _client_with_fs(fs_payload: dict, flag_name: str = "exp_pulsepilot_judge_checkout_v1"):
     mock_session = MagicMock()
     feat_resp = MagicMock()
-    feat_resp.json.return_value = {"results": [{"id": 55, "name": "exp_pulsepilot_judge_checkout_v1"}]}
+    feat_resp.json.return_value = {"results": [{"id": 55, "name": flag_name}]}
     feat_resp.raise_for_status.return_value = None
 
     fs_resp = MagicMock()
@@ -288,3 +288,47 @@ def test_metrics_ingest_endpoint_auth_and_soak_gating(tmp_path):
     assert ev.value == 0.0
     assert ev.sample_size == 30
     assert ev.status == MetricStatus.HEALTHY
+
+
+def test_v2_feature_versioning_fallback_publishes_version():
+    fs_single = {
+        "id": 1899299,
+        "feature": 308340,
+        "environment": 7,
+        "enabled": False,
+        "feature_state_value": "off",
+        "multivariate_feature_state_values": [
+            {"id": 5001, "multivariate_feature_option": {"id": 6001, "value": "on"}, "percentage_allocation": 0.0}
+        ],
+    }
+    client, mock_session = _client_with_fs(fs_single, flag_name="pulsepilot_checkout_rollout_v1")
+    v2_err_resp = MagicMock()
+    v2_err_resp.ok = False
+    v2_err_resp.status_code = 400
+    v2_err_resp.text = '{"detail":"This environment uses v2 feature versioning. Use the environment feature version endpoint instead."}'
+    mock_session.patch.return_value = v2_err_resp
+
+    v2_ok_resp = MagicMock()
+    v2_ok_resp.ok = True
+    v2_ok_resp.json.return_value = {"uuid": "ver-1", "published": True}
+    mock_session.post.return_value = v2_ok_resp
+
+    res = client.set_percentage_rollout("pulsepilot_checkout_rollout_v1", 1.0)
+    assert res["published"] is True
+    mock_session.post.assert_called_once_with(
+        "https://app.flagsmith.com/api/v1/environments/7/features/308340/versions/",
+        json={
+            "publish_immediately": True,
+            "feature_states_to_update": [
+                {
+                    "id": 1899299,
+                    "enabled": True,
+                    "feature_state_value": "off",
+                    "multivariate_feature_state_values": [
+                        {"id": 5001, "multivariate_feature_option": 6001, "percentage_allocation": 1.0}
+                    ],
+                }
+            ],
+        },
+        timeout=10.0,
+    )

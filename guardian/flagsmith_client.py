@@ -162,6 +162,54 @@ class FlagsmithAdminClient:
             )
         return 100.0
 
+    def _patch_or_publish_feature_state(
+        self,
+        flag_name: str,
+        fs: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Update a FeatureState via v1 PATCH, falling back to v2 Feature Versioning when enabled."""
+        fs_id = fs["id"]
+        env_id = fs.get("environment") or self.environment_id
+        url = f"{self.api_url}/features/featurestates/{fs_id}/"
+        resp = self.session.patch(url, json=payload, timeout=self.timeout)
+        if resp.ok:
+            return resp.json()
+
+        # Flagsmith Cloud environments with v2 feature versioning require creating & publishing a version
+        if resp.status_code == 400 and "v2 feature versioning" in (resp.text or "").lower():
+            feature_id = fs.get("feature") or self.get_feature(flag_name)["id"]
+            fs_update: Dict[str, Any] = {
+                "id": fs_id,
+                "enabled": payload["enabled"],
+            }
+            if "feature_state_value" in fs:
+                fs_update["feature_state_value"] = fs["feature_state_value"]
+            if "multivariate_feature_state_values" in payload:
+                fs_update["multivariate_feature_state_values"] = payload["multivariate_feature_state_values"]
+
+            v2_url = f"{self.api_url}/environments/{env_id}/features/{feature_id}/versions/"
+            v2_payload = {
+                "publish_immediately": True,
+                "feature_states_to_update": [fs_update],
+            }
+            v2_resp = self.session.post(v2_url, json=v2_payload, timeout=self.timeout)
+            if v2_resp.ok:
+                return v2_resp.json()
+            msg = f"Flagsmith v2 version publish {v2_url} failed ({v2_resp.status_code}): {v2_resp.text[:300]}"
+            logger.error(msg)
+            raise RuntimeError(msg)
+
+        if self.environment_key:
+            env_url = f"{self.api_url}/environments/{self.environment_key}/featurestates/{fs_id}/"
+            env_resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
+            if env_resp.ok:
+                return env_resp.json()
+
+        msg = f"Flagsmith PATCH {url} failed ({resp.status_code}): {resp.text[:300]}"
+        logger.error(msg)
+        raise RuntimeError(msg)
+
     def set_percentage_rollout(self, flag_name: str, percentage: float) -> Dict[str, Any]:
         """
         Updates the rollout percentage on a feature flag without corrupting multi-variant weights.
@@ -208,18 +256,7 @@ class FlagsmithAdminClient:
                 "enabled": bool(percentage > 0),
             }
 
-        url = f"{self.api_url}/features/featurestates/{fs_id}/"
-        resp = self.session.patch(url, json=payload, timeout=self.timeout)
-        if not resp.ok and self.environment_key:
-            env_url = f"{self.api_url}/environments/{self.environment_key}/featurestates/{fs_id}/"
-            env_resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
-            if env_resp.ok:
-                return env_resp.json()
-        if not resp.ok:
-            msg = f"Flagsmith PATCH {url} failed ({resp.status_code}): {resp.text[:300]}"
-            logger.error(msg)
-            raise RuntimeError(msg)
-        return resp.json()
+        return self._patch_or_publish_feature_state(flag_name, fs, payload)
 
     def rollback_to_zero(self, flag_name: str, reason: str = "") -> Dict[str, Any]:
         """
@@ -253,15 +290,7 @@ class FlagsmithAdminClient:
                 "enabled": False,
             }
 
-        url = f"{self.api_url}/features/featurestates/{fs_id}/"
-        resp = self.session.patch(url, json=payload, timeout=self.timeout)
-        if resp.status_code in (404, 405) and self.environment_key:
-            env_url = f"{self.api_url}/environments/{self.environment_key}/featurestates/{fs_id}/"
-            resp = self.session.patch(env_url, json=payload, timeout=self.timeout)
-        if not resp.ok:
-            logger.error("Flagsmith rollback PATCH %s failed (%s): %s", url, resp.status_code, resp.text[:500])
-        resp.raise_for_status()
-        return resp.json()
+        return self._patch_or_publish_feature_state(flag_name, fs, payload)
 
     # -------------------------------------------------------------------------
     # Discovery endpoints (projects, environments, features)
