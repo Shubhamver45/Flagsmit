@@ -102,6 +102,12 @@ class GuardianStorage:
                 pass
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_flag ON audit_log(flag_name);")
             self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+            """)
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS idempotency (
                     action_key TEXT PRIMARY KEY,
                     flag_name TEXT NOT NULL,
@@ -299,6 +305,10 @@ class GuardianStorage:
                         "UPDATE audit_log SET count = ?, last_timestamp = ?, reason = ?, numbers_json = ?, entry_hash = ? WHERE id = ?",
                         (current_count, timestamp, reason, numbers_json, new_hash, last_row["id"]),
                     )
+                    self._conn.execute(
+                        "INSERT INTO audit_meta (key, value) VALUES ('chain_head', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (new_hash,),
+                    )
                     return last_row["id"]
 
             tail_row = self._conn.execute("SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
@@ -314,6 +324,10 @@ class GuardianStorage:
                 """,
                 (timestamp, timestamp, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json, prev_hash, entry_hash),
             )
+            self._conn.execute(
+                "INSERT INTO audit_meta (key, value) VALUES ('chain_head', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (entry_hash,),
+            )
             row_id = cur.lastrowid
             # Keep SQLite from growing without bound
             self._prune_audit_log_locked(max_entries=1000)
@@ -325,6 +339,11 @@ class GuardianStorage:
             rows = self._conn.execute(
                 "SELECT id, timestamp, flag_name, from_state, to_state, decision, reason, numbers_json, prev_hash, entry_hash FROM audit_log ORDER BY id ASC"
             ).fetchall()
+            head_row = self._conn.execute(
+                "SELECT value FROM audit_meta WHERE key = 'chain_head'"
+            ).fetchone()
+        chain_head = head_row["value"] if head_row else None
+
         expected_prev = None
         checked = 0
         for row in rows:
@@ -347,6 +366,11 @@ class GuardianStorage:
             if calc != row["entry_hash"]:
                 return {"valid": False, "checked_entries": checked, "broken_id": row["id"], "reason": f"Hash mismatch at audit id={row['id']}"}
             expected_prev = row["entry_hash"]
+
+        if chain_head and checked == 0:
+            return {"valid": False, "checked_entries": 0, "broken_id": None, "reason": "Audit records missing while chain_head exists"}
+        if chain_head and expected_prev != chain_head:
+            return {"valid": False, "checked_entries": checked, "broken_id": None, "reason": "Audit chain_head mismatch (tail deletion or tampering)"}
         return {"valid": True, "checked_entries": checked, "broken_id": None, "reason": "Audit hash chain verified"}
 
     def prune_audit_log(self, max_entries: int = 1000) -> None:

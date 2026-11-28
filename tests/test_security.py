@@ -354,3 +354,53 @@ def test_webhook_replay_and_audit_chain_tamper_detection(monkeypatch, tmp_path):
     res = client.get("/audit/verify").json()
     assert res["valid"] is False
     storage.close()
+
+
+def test_dashboard_uses_httponly_session_and_csrf_not_localstorage(tmp_path):
+    """Dashboard HTML must not use localStorage for tokens; /auth/session uses HttpOnly cookie + CSRF."""
+    from unittest.mock import MagicMock
+    from fastapi.testclient import TestClient
+    from guardian.api import create_app
+    from guardian.config import RolloutConfig
+    from guardian.engine import GuardianEngine
+    from guardian.storage import GuardianStorage
+    from guardian.status_page import STATUS_PAGE_HTML
+
+    assert "localStorage" not in STATUS_PAGE_HTML
+
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+    storage = GuardianStorage(db_path=tmp_path / "sess.db")
+    engine = GuardianEngine(
+        config=RolloutConfig(flag_name="new_checkout", stages=[1, 100], soak_time_seconds=0),
+        flagsmith_client=mock_client,
+        storage=storage,
+        skip_startup_reconciliation=True,
+    )
+    app = create_app(engine=engine, api_token="super-secret-op")
+    client = TestClient(app)
+
+    # Wrong token rejected
+    assert client.post("/auth/session", json={"token": "wrong"}).status_code == 401
+
+    # Valid token sets HttpOnly guardian_session cookie & returns csrf_token
+    login = client.post("/auth/session", json={"token": "super-secret-op"})
+    assert login.status_code == 200
+    assert "guardian_session" in login.cookies
+    set_cookie_hdr = login.headers.get("set-cookie", "").lower()
+    assert "httponly" in set_cookie_hdr
+    assert "samesite=lax" in set_cookie_hdr
+    csrf_tok = login.json()["csrf_token"]
+
+    # State-changing POST with session cookie but WITHOUT X-CSRF-Token -> 403 CSRF blocked
+    no_csrf = client.post("/tick")
+    assert no_csrf.status_code == 403
+
+    # With matching X-CSRF-Token -> 200
+    with_csrf = client.post("/tick", headers={"X-CSRF-Token": csrf_tok})
+    assert with_csrf.status_code == 200
+
+    # Logout invalidates session
+    client.delete("/auth/session")
+    assert client.post("/tick", headers={"X-CSRF-Token": csrf_tok}).status_code == 401
+    storage.close()

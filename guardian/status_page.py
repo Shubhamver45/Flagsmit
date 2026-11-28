@@ -986,20 +986,41 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       }).join('');
     }
 
-    function saveOperatorToken() {
+    let sessionCsrfToken = '';
+
+    function getCookie(name) {
+      const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    async function saveOperatorToken() {
       const input = document.getElementById('operator-token-input');
-      if (input && input.value.trim()) {
-        localStorage.setItem('guardian_token', input.value.trim());
+      if (!input || !input.value.trim()) return;
+      try {
+        const res = await fetch('/auth/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ token: input.value.trim() }),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          alert('Authentication Failed: ' + (json.detail || JSON.stringify(json)));
+          return;
+        }
+        sessionCsrfToken = json.csrf_token || '';
         input.value = '';
-        alert('Operator token saved to localStorage.');
+        alert('Operator session active (HttpOnly cookie, 1h TTL).');
+      } catch (err) {
+        alert('Authentication Error: ' + err);
       }
     }
 
     function getAuthHeaders() {
       const headers = { 'Content-Type': 'application/json' };
-      const token = localStorage.getItem('guardian_token');
-      if (token) {
-        headers['Authorization'] = 'Bearer ' + token;
+      const csrf = sessionCsrfToken || getCookie('guardian_csrf');
+      if (csrf) {
+        headers['X-CSRF-Token'] = csrf;
       }
       return headers;
     }

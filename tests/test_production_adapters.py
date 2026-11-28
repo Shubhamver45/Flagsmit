@@ -129,8 +129,8 @@ def test_slack_interactive_webhook_signature_and_actions(monkeypatch, tmp_path):
     mp = MagicMock()
     mp.evaluate_all.return_value = []
     engine = GuardianEngine(config=cfg, flagsmith_client=fs, metric_provider=mp)
-    engine.approve = MagicMock(return_value={"flag_name": "new_checkout", "state": "PROMOTED"})
-    engine.manual_rollback = MagicMock(return_value={"flag_name": "new_checkout", "state": "ROLLED_BACK"})
+    engine.approve = MagicMock(return_value=SimpleNamespace(flag_name="new_checkout", to_state="PROMOTED"))
+    engine.manual_rollback = MagicMock(return_value=SimpleNamespace(flag_name="new_checkout", to_state="ROLLED_BACK"))
 
     app = create_app(engine)
     client = TestClient(app)

@@ -123,6 +123,10 @@ class ResumeRequest(BaseModel):
     flag_name: Optional[str] = None
 
 
+class SessionLoginRequest(BaseModel):
+    token: str
+
+
 def create_app(
     engine: GuardianEngine,
     api_token: Optional[str] = None,
@@ -143,13 +147,16 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
-            allow_credentials=False,
-            allow_methods=["GET", "POST"],
-            allow_headers=["Authorization", "Content-Type", "X-API-Token", "X-Guardian-Token"],
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "X-API-Token", "X-Guardian-Token", "X-CSRF-Token"],
         )
 
     _seen_webhook_digests: Dict[str, float] = {}
     _webhook_lock = threading.Lock()
+    _operator_sessions: Dict[str, Dict[str, Any]] = {}
+    _session_lock = threading.Lock()
+    _SESSION_TTL_SECONDS = 3600
 
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -189,6 +196,24 @@ def create_app(
         if header_token and secrets.compare_digest(header_token, expected_token):
             return True
 
+        # 3. HttpOnly short-lived session cookie + CSRF header check for state-changing methods
+        sess_id = request.cookies.get("guardian_session")
+        if sess_id:
+            now_ts = time.time()
+            with _session_lock:
+                sess = _operator_sessions.get(sess_id)
+                if sess and now_ts < sess["expires_at"]:
+                    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                        csrf_hdr = request.headers.get("X-CSRF-Token", "")
+                        if not csrf_hdr or not secrets.compare_digest(csrf_hdr, sess["csrf_token"]):
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Forbidden: Missing or invalid X-CSRF-Token header",
+                            )
+                    return True
+                elif sess:
+                    _operator_sessions.pop(sess_id, None)
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized: Invalid or missing API token",
@@ -197,11 +222,62 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        # Security: Never inject server-side secrets into served HTML.
-        # The dashboard reads the operator token from localStorage only.
-        # Set it via the token input field in the UI or via browser console:
-        #   localStorage.setItem('guardian_token', '<your-token>')
+        # Security: Never inject server-side secrets into served HTML or store tokens in localStorage.
         return STATUS_PAGE_HTML
+
+    @app.post("/auth/session", dependencies=[Depends(rate_limit_write_endpoints)])
+    def create_session(payload: SessionLoginRequest, request: Request) -> JSONResponse:
+        expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+        if is_prod and not expected_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GUARDIAN_API_TOKEN not configured")
+        if expected_token and not secrets.compare_digest(payload.token.strip(), expected_token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid operator token")
+
+        sess_id = secrets.token_urlsafe(32)
+        csrf_token = secrets.token_urlsafe(24)
+        with _session_lock:
+            now_ts = time.time()
+            expired = [k for k, v in _operator_sessions.items() if now_ts >= v["expires_at"]]
+            for k in expired:
+                _operator_sessions.pop(k, None)
+            _operator_sessions[sess_id] = {
+                "csrf_token": csrf_token,
+                "expires_at": now_ts + _SESSION_TTL_SECONDS,
+            }
+
+        is_secure = is_prod or request.url.scheme == "https"
+        resp = JSONResponse({"authenticated": True, "expires_in": _SESSION_TTL_SECONDS, "csrf_token": csrf_token})
+        resp.set_cookie(
+            key="guardian_session",
+            value=sess_id,
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=_SESSION_TTL_SECONDS,
+            path="/",
+        )
+        resp.set_cookie(
+            key="guardian_csrf",
+            value=csrf_token,
+            httponly=False,
+            samesite="lax",
+            secure=is_secure,
+            max_age=_SESSION_TTL_SECONDS,
+            path="/",
+        )
+        return resp
+
+    @app.delete("/auth/session")
+    def delete_session(request: Request) -> JSONResponse:
+        sess_id = request.cookies.get("guardian_session")
+        if sess_id:
+            with _session_lock:
+                _operator_sessions.pop(sess_id, None)
+        resp = JSONResponse({"authenticated": False})
+        resp.delete_cookie("guardian_session", path="/")
+        resp.delete_cookie("guardian_csrf", path="/")
+        return resp
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
@@ -390,21 +466,16 @@ def create_app(
 
         if action_id == "guardian_approve":
             try:
-                res = engine.approve(
-                    operator=operator,
-                    reason="Approved via Slack interactive button",
-                    flag_name=flag_name,
-                )
-                return {"response_type": "in_channel", "text": f"Approved 100% promotion for `{res.get('flag_name', flag_name)}` by {operator}."}
+                res = engine.approve(flag_name=flag_name)
+                return {"response_type": "in_channel", "text": f"Approved 100% promotion for `{res.flag_name}` by {operator}."}
             except ValueError as e:
                 return {"response_type": "ephemeral", "text": f"Approval blocked: {e}"}
         elif action_id == "guardian_rollback":
             res = engine.manual_rollback(
-                operator=operator,
-                reason="Rollback triggered via Slack interactive button",
                 flag_name=flag_name,
+                reason=f"Rollback triggered via Slack interactive button by {operator}",
             )
-            return {"response_type": "in_channel", "text": f"Rolled back `{res.get('flag_name', flag_name)}` to 0% by {operator}."}
+            return {"response_type": "in_channel", "text": f"Rolled back `{res.flag_name}` to 0% by {operator}."}
 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported Slack action_id: {action_id}")
 
