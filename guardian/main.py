@@ -115,6 +115,18 @@ async def background_reconciler(engine: GuardianEngine, interval: float = 10.0) 
         await asyncio.sleep(interval)
 
 
+async def background_workspace_ticker(workspace_manager: Any, interval: float = 10.0) -> None:
+    """Periodic evaluation ticker for all active multi-tenant user workspaces."""
+    print(f"🛡️  Guardian multi-tenant workspace worker active (interval: {interval}s)")
+    while True:
+        try:
+            if workspace_manager is not None:
+                await asyncio.to_thread(workspace_manager.tick_all_active)
+        except Exception as e:
+            print(f"⚠️  Workspace ticker error: {e}", file=sys.stderr)
+        await asyncio.sleep(interval)
+
+
 def build_engine(
     config_path: str = "config.yaml",
     demo_mode: bool = False,
@@ -246,12 +258,15 @@ def run_server(
     async def lifespan(app_instance):
         ticker_task = asyncio.create_task(background_ticker(engine, interval=interval))
         reconciler_task = asyncio.create_task(background_reconciler(engine, interval=reconcile_interval))
+        ws_manager = getattr(app_instance.state, "workspace_manager", None)
+        ws_ticker_task = asyncio.create_task(background_workspace_ticker(ws_manager, interval=max(interval, 10.0)))
         try:
             yield
         finally:
             ticker_task.cancel()
             reconciler_task.cancel()
-            await asyncio.gather(ticker_task, reconciler_task, return_exceptions=True)
+            ws_ticker_task.cancel()
+            await asyncio.gather(ticker_task, reconciler_task, ws_ticker_task, return_exceptions=True)
 
     app = create_app(engine, lifespan=lifespan)
 

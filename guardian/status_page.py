@@ -376,6 +376,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         <a id="open-flagsmith-link" href="#" target="_blank" rel="noopener noreferrer" style="display: none; font-size: 12px; color: #818cf8; text-decoration: none; border: 1px solid rgba(99,102,241,0.35); padding: 3px 10px; border-radius: 9999px;">Open in Flagsmith ↗</a>
       </div>
       <div class="header-controls">
+        <a href="/app" style="background: rgba(99,102,241,0.18); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.35); border-radius: 9999px; padding: 5px 12px; font-size: 12px; font-weight: 600; text-decoration: none;">Workspaces / Sign In →</a>
         <div style="display: flex; align-items: center; gap: 6px; background: var(--card-bg); border: 1px solid var(--card-border); padding: 4px 10px; border-radius: 9999px;">
           <input id="operator-token-input" type="password" placeholder="Operator Token" style="background: transparent; border: none; color: var(--text-main); font-size: 12px; width: 120px; outline: none;" />
           <button onclick="saveOperatorToken()" style="background: rgba(99,102,241,0.2); color: #818cf8; border: none; border-radius: 9999px; padding: 2px 8px; font-size: 11px; cursor: pointer;">Set</button>

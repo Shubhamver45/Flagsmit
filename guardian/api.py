@@ -27,6 +27,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from guardian.engine import GuardianEngine
 from guardian.state_machine import RolloutState
 from guardian.status_page import STATUS_PAGE_HTML
+from guardian.app_page import APP_PAGE_HTML
+from guardian.tenants import TenantStore, WorkspaceManager, USER_SESSION_TTL_SECONDS
 
 logger = logging.getLogger("guardian.api")
 
@@ -125,6 +127,42 @@ class ResumeRequest(BaseModel):
 
 class SessionLoginRequest(BaseModel):
     token: str
+
+
+class UserSignupRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = ""
+
+
+class UserLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class WorkspaceCreateRequest(BaseModel):
+    name: str
+    flagsmith_url: str
+    flagsmith_admin_api_key: str
+    flagsmith_environment_key: str
+    flag_name: str
+    stages: Optional[List[int]] = None
+    soak_time_seconds: int = 30
+    require_approval_before_final: bool = True
+    guardrails: Optional[List[Dict[str, Any]]] = None
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    flagsmith_url: Optional[str] = None
+    flagsmith_admin_api_key: Optional[str] = None
+    flagsmith_environment_key: Optional[str] = None
+    flag_name: Optional[str] = None
+    stages: Optional[List[int]] = None
+    soak_time_seconds: Optional[int] = None
+    require_approval_before_final: Optional[bool] = None
+    guardrails: Optional[List[Dict[str, Any]]] = None
+    is_active: Optional[bool] = None
 
 
 def create_app(
@@ -868,5 +906,230 @@ def create_app(
             )
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    # -------------------------------------------------------------------------
+    # Multi-User SaaS Workspaces (/app, /api/auth/*, /api/workspaces/*)
+    # -------------------------------------------------------------------------
+    engine_db_path = getattr(getattr(engine, "storage", None), "db_path", None)
+    tenant_store = TenantStore(db_path=engine_db_path)
+    workspace_manager = WorkspaceManager(tenant_store)
+    app.state.tenant_store = tenant_store
+    app.state.workspace_manager = workspace_manager
+
+    def _set_user_session_cookies(resp: JSONResponse, sess: Dict[str, Any], request: Request) -> JSONResponse:
+        is_prod = os.environ.get("GUARDIAN_ENV", "").strip().lower() == "production"
+        is_secure = is_prod or request.url.scheme == "https"
+        resp.set_cookie(
+            key="guardian_user_session",
+            value=sess["session_id"],
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=USER_SESSION_TTL_SECONDS,
+            path="/",
+        )
+        return resp
+
+    def _require_user(request: Request) -> Dict[str, Any]:
+        sess_id = request.cookies.get("guardian_user_session")
+        sess_data = tenant_store.get_session_user(sess_id) if sess_id else None
+        if not sess_data:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            csrf_hdr = request.headers.get("X-CSRF-Token", "")
+            if not csrf_hdr or not secrets.compare_digest(csrf_hdr, sess_data["csrf_token"]):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing or invalid X-CSRF-Token")
+        return sess_data
+
+    def _get_owned_workspace_and_engine(ws_id: str, user_id: str):
+        ws = tenant_store.get_workspace_for_user(ws_id, user_id)
+        if not ws:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+        ws_engine = workspace_manager.get_engine(ws_id)
+        if not ws_engine:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace engine unavailable")
+        return ws, ws_engine
+
+    @app.get("/app", response_class=HTMLResponse)
+    def app_portal() -> str:
+        return APP_PAGE_HTML
+
+    @app.post("/api/auth/signup", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_signup(payload: UserSignupRequest, request: Request) -> JSONResponse:
+        try:
+            user = tenant_store.create_user(payload.email, payload.password, payload.name or "")
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        sess = tenant_store.create_session(user["id"])
+        resp = JSONResponse({"user": user, "csrf_token": sess["csrf_token"]}, status_code=201)
+        return _set_user_session_cookies(resp, sess, request)
+
+    @app.post("/api/auth/login", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_login(payload: UserLoginRequest, request: Request) -> JSONResponse:
+        user = tenant_store.authenticate_user(payload.email, payload.password)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+        sess = tenant_store.create_session(user["id"])
+        resp = JSONResponse({"user": user, "csrf_token": sess["csrf_token"]})
+        return _set_user_session_cookies(resp, sess, request)
+
+    @app.post("/api/auth/logout")
+    def api_logout(request: Request) -> JSONResponse:
+        sess_id = request.cookies.get("guardian_user_session")
+        if sess_id:
+            tenant_store.delete_session(sess_id)
+        resp = JSONResponse({"authenticated": False})
+        resp.delete_cookie("guardian_user_session", path="/")
+        return resp
+
+    @app.get("/api/auth/me")
+    def api_me(request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        return {"user": sess_data["user"], "csrf_token": sess_data["csrf_token"]}
+
+    @app.get("/api/workspaces")
+    def api_list_workspaces(request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        return {"workspaces": tenant_store.list_workspaces_for_user(sess_data["user"]["id"])}
+
+    @app.post("/api/workspaces", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_create_workspace(payload: WorkspaceCreateRequest, request: Request) -> JSONResponse:
+        sess_data = _require_user(request)
+        try:
+            ws = tenant_store.create_workspace(
+                owner_user_id=sess_data["user"]["id"],
+                name=payload.name,
+                flagsmith_url=payload.flagsmith_url,
+                flagsmith_admin_api_key=payload.flagsmith_admin_api_key,
+                flagsmith_environment_key=payload.flagsmith_environment_key,
+                flag_name=payload.flag_name,
+                stages=payload.stages,
+                soak_time_seconds=payload.soak_time_seconds,
+                require_approval_before_final=payload.require_approval_before_final,
+                guardrails=payload.guardrails,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        return JSONResponse({"workspace": ws}, status_code=201)
+
+    @app.put("/api/workspaces/{ws_id}", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_update_workspace(ws_id: str, payload: WorkspaceUpdateRequest, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws = tenant_store.update_workspace(ws_id, sess_data["user"]["id"], payload.model_dump(exclude_unset=True))
+        if not ws:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+        workspace_manager.invalidate(ws_id)
+        return {"workspace": ws}
+
+    @app.delete("/api/workspaces/{ws_id}", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_delete_workspace(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        workspace_manager.invalidate(ws_id)
+        ok = tenant_store.delete_workspace(ws_id, sess_data["user"]["id"])
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+        return {"deleted": True, "id": ws_id}
+
+    @app.post("/api/workspaces/{ws_id}/rotate-key", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_rotate_workspace_key(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        new_key = tenant_store.rotate_ingest_key(ws_id, sess_data["user"]["id"])
+        if not new_key:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+        return {"ingest_api_key": new_key}
+
+    @app.get("/api/workspaces/{ws_id}/status")
+    def api_workspace_status(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        _, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.get_status()
+
+    @app.post("/api/workspaces/{ws_id}/tick", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_workspace_tick(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        entry = ws_engine.tick(flag_name=ws["flag_name"])
+        return {"decision": entry.decision, "from_state": entry.from_state, "to_state": entry.to_state, "reason": entry.reason}
+
+    @app.post("/api/workspaces/{ws_id}/approve", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_workspace_approve(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.approve(flag_name=ws["flag_name"])
+
+    @app.post("/api/workspaces/{ws_id}/rollback", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_workspace_rollback(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.manual_rollback(flag_name=ws["flag_name"], reason="Workspace operator emergency rollback")
+
+    @app.post("/api/workspaces/{ws_id}/pause", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_workspace_pause(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.pause(flag_name=ws["flag_name"])
+
+    @app.post("/api/workspaces/{ws_id}/resume", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_workspace_resume(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.resume(flag_name=ws["flag_name"])
+
+    @app.post("/api/workspaces/{ws_id}/reset", dependencies=[Depends(rate_limit_write_endpoints)])
+    def api_workspace_reset(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        ws, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.reset(flag_name=ws["flag_name"])
+
+    @app.get("/api/workspaces/{ws_id}/audit/verify")
+    def api_workspace_audit_verify(ws_id: str, request: Request) -> Dict[str, Any]:
+        sess_data = _require_user(request)
+        _, ws_engine = _get_owned_workspace_and_engine(ws_id, sess_data["user"]["id"])
+        return ws_engine.storage.verify_audit_chain()
+
+    @app.post("/api/workspaces/{ws_id}/metrics/ingest", dependencies=[Depends(rate_limit_write_endpoints)])
+    async def api_workspace_ingest_metrics(
+        ws_id: str,
+        request: Request,
+        auth: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+    ) -> Dict[str, Any]:
+        raw_ws = tenant_store.get_workspace_raw(ws_id)
+        if not raw_ws:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+        authorized = False
+        if auth and auth.credentials and secrets.compare_digest(auth.credentials, raw_ws["ingest_api_key"]):
+            authorized = True
+        else:
+            sess_id = request.cookies.get("guardian_user_session")
+            sess_data = tenant_store.get_session_user(sess_id) if sess_id else None
+            if sess_data and sess_data["user"]["id"] == raw_ws["owner_user_id"]:
+                csrf_hdr = request.headers.get("X-CSRF-Token", "")
+                if csrf_hdr and secrets.compare_digest(csrf_hdr, sess_data["csrf_token"]):
+                    authorized = True
+
+        if not authorized:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid workspace ingest key")
+
+        try:
+            payload = json.loads(await request.body())
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="JSON body must be an object")
+
+        ws_engine = workspace_manager.get_engine(ws_id)
+        push_source = ws_engine.metric_provider._sources.get("push") if ws_engine else None
+        if not push_source:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Push metric source unavailable")
+        try:
+            return push_source.ingest(
+                metric=payload.get("metric"),
+                requests=payload.get("requests"),
+                errors=payload.get("errors"),
+                timestamp=payload.get("timestamp"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     return app
