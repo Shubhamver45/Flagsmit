@@ -42,6 +42,10 @@ guardrails:
 
 For **Prometheus**, use `metric_source: "prometheus"` with `query:` and `sample_size_query:` (see [config.example.yaml](../config.example.yaml)).
 
+For **Datadog** (`metric_source: "datadog"`), set `DD_API_KEY` and `DD_APP_KEY` (and optional `DD_SITE`) and set `query:` to a Datadog metrics query.
+
+For **AWS CloudWatch** (`metric_source: "cloudwatch"`), install `pip install flagsmith-guardian[aws]` and set `query:` to `Namespace/MetricName` or a JSON spec (`Namespace`, `MetricName`, `Statistic`, `Period`, `Dimensions`).
+
 ---
 
 ## Step 3: Run `guardian init` Against Your Own Flagsmith

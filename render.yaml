@@ -8,7 +8,7 @@ services:
       - key: GUARDIAN_ENV
         value: production
       - key: GUARDIAN_CONFIG_PATH
-        value: /app/config.example.yaml
+        value: /app/config.render.yaml
       - key: GUARDIAN_API_TOKEN
         generateValue: true
       - key: FLAGSMITH_WEBHOOK_SECRET

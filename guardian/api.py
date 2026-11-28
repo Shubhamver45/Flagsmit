@@ -270,6 +270,83 @@ def create_app(
 
         return engine.handle_flagsmith_webhook(payload)
 
+    @app.post(
+        "/webhooks/slack",
+        dependencies=[Depends(rate_limit_write_endpoints)],
+    )
+    async def slack_interactive_webhook(request: Request) -> Dict[str, Any]:
+        """
+        Handles Slack Block Kit interactive button callbacks (guardian_approve, guardian_rollback).
+        Always fails closed unless SLACK_SIGNING_SECRET is configured and X-Slack-Signature verifies.
+        """
+        signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "").strip()
+        if not signing_secret:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Slack interactivity disabled: SLACK_SIGNING_SECRET is not configured",
+            )
+
+        ts_header = request.headers.get("X-Slack-Request-Timestamp", "").strip()
+        sig_header = request.headers.get("X-Slack-Signature", "").strip()
+        if not ts_header or not sig_header:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing Slack signature headers",
+            )
+        try:
+            ts_int = int(ts_header)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Slack timestamp")
+        if abs(time.time() - ts_int) > 300:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Stale Slack request timestamp")
+
+        raw_body = await request.body()
+        basestring = f"v0:{ts_header}:{raw_body.decode('utf-8', errors='replace')}".encode("utf-8")
+        expected = "v0=" + hmac.new(signing_secret.encode("utf-8"), basestring, hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(expected, sig_header):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-Slack-Signature")
+
+        from urllib.parse import parse_qs
+        body_text = raw_body.decode("utf-8", errors="replace")
+        try:
+            if body_text.lstrip().startswith("{"):
+                payload = json.loads(body_text)
+            else:
+                form = parse_qs(body_text)
+                payload = json.loads(form.get("payload", ["{}"])[0])
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid Slack payload: {e}")
+
+        actions = payload.get("actions") or []
+        if not actions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing Slack action")
+
+        action = actions[0]
+        action_id = action.get("action_id", "")
+        flag_name = action.get("value") or None
+        user_obj = payload.get("user") or {}
+        operator = f"slack:{user_obj.get('username') or user_obj.get('id') or 'operator'}"
+
+        if action_id == "guardian_approve":
+            try:
+                res = engine.approve(
+                    operator=operator,
+                    reason="Approved via Slack interactive button",
+                    flag_name=flag_name,
+                )
+                return {"response_type": "in_channel", "text": f"Approved 100% promotion for `{res.get('flag_name', flag_name)}` by {operator}."}
+            except ValueError as e:
+                return {"response_type": "ephemeral", "text": f"Approval blocked: {e}"}
+        elif action_id == "guardian_rollback":
+            res = engine.manual_rollback(
+                operator=operator,
+                reason="Rollback triggered via Slack interactive button",
+                flag_name=flag_name,
+            )
+            return {"response_type": "in_channel", "text": f"Rolled back `{res.get('flag_name', flag_name)}` to 0% by {operator}."}
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported Slack action_id: {action_id}")
+
     def _is_request_authenticated(request: Request) -> bool:
         expected_token = api_token or os.environ.get("GUARDIAN_API_TOKEN") or os.environ.get("GUARDIAN_TOKEN")
         if not expected_token:

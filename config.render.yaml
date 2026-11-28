@@ -1,0 +1,25 @@
+# Guardian Configuration for Single-Container Render Deployment (Push Metrics)
+flag_name: "new_checkout"
+environment_key: ""
+
+stages:
+  - 1
+  - 5
+  - 25
+  - 100
+
+soak_time_seconds: 30
+require_approval_before_final: true
+require_winner: false
+reconcile_interval: 10.0
+echo_window_seconds: 30.0
+
+guardrails:
+  - name: "checkout_push_error_rate"
+    metric_source: "push"
+    metric: "checkout"
+    comparison: ">"
+    threshold: 5.0
+    min_samples: 30
+    window_seconds: 60
+    description: "Rollback to 0% if pushed checkout error rate exceeds 5.0%"
