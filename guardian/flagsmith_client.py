@@ -60,6 +60,7 @@ class FlagsmithAdminClient:
         self._project_id = project_id
         self._environment_id = environment_id
         self.timeout = timeout
+        self._segment_override_ids: Dict[tuple, int] = {}
 
         if session is not None:
             self.session = session
@@ -251,6 +252,148 @@ class FlagsmithAdminClient:
             url = page.get("next")  # follow pagination
         return results
 
+    # -------------------------------------------------------------------------
+    # Segment Override endpoints (optional pre-percentage segment stage)
+    # -------------------------------------------------------------------------
+    def get_segment_by_name(self, segment_name: str, project_id: Optional[int] = None) -> Dict[str, Any]:
+        """Find a Flagsmith segment by name within the project."""
+        pid = project_id or self.project_id
+        url = f"{self.api_url}/projects/{pid}/segments/"
+        while url:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            page = resp.json()
+            items = page if isinstance(page, list) else page.get("results", [])
+            for seg in items:
+                if seg.get("name") == segment_name:
+                    return seg
+            url = None if isinstance(page, list) else page.get("next")
+        raise ValueError(f"Segment '{segment_name}' not found in Flagsmith project {pid}")
+
+    def _find_feature_segment(self, feature_id: int, segment_id: int, env_id: int) -> Optional[Dict[str, Any]]:
+        url = f"{self.api_url}/features/feature-segments/"
+        resp = self.session.get(
+            url,
+            params={"environment": env_id, "feature": feature_id},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data if isinstance(data, list) else data.get("results", [])
+        for fs_seg in items:
+            if fs_seg.get("segment") == segment_id and fs_seg.get("feature") == feature_id:
+                return fs_seg
+        return None
+
+    def enable_segment_override(
+        self,
+        flag_name: str,
+        segment_name: str,
+        enabled: bool = True,
+        value: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a Flagsmith segment override on a feature flag."""
+        feature = self.get_feature(flag_name)
+        feature_id = feature["id"]
+        env_id = self.environment_id
+        seg = self.get_segment_by_name(segment_name)
+        segment_id = seg["id"]
+
+        fs_seg = self._find_feature_segment(feature_id, segment_id, env_id)
+        if fs_seg is None:
+            seg_resp = self.session.post(
+                f"{self.api_url}/features/feature-segments/",
+                json={"feature": feature_id, "segment": segment_id, "environment": env_id},
+                timeout=self.timeout,
+            )
+            seg_resp.raise_for_status()
+            fs_seg = seg_resp.json()
+
+        fs_seg_id = fs_seg["id"]
+        self._segment_override_ids[(flag_name, segment_name)] = fs_seg_id
+        # Fetch featurestates for (environment, feature) and match feature_segment in Python
+        existing_resp = self.session.get(
+            f"{self.api_url}/features/featurestates/",
+            params={"environment": env_id, "feature": feature_id},
+            timeout=self.timeout,
+        )
+        existing_resp.raise_for_status()
+        existing_data = existing_resp.json()
+        all_fs = existing_data if isinstance(existing_data, list) else existing_data.get("results", [])
+        existing_items = [item for item in all_fs if item.get("feature_segment") == fs_seg_id]
+
+        payload: Dict[str, Any] = {
+            "feature": feature_id,
+            "environment": env_id,
+            "feature_segment": fs_seg_id,
+            "enabled": enabled,
+        }
+        if value is not None:
+            payload["feature_state_value"] = {"type": "unicode", "string_value": str(value)}
+
+        env_fs = self.get_environment_feature_state(flag_name)
+        mv_values = env_fs.get("multivariate_feature_state_values", [])
+        if mv_values and not existing_items:
+            payload["multivariate_feature_state_values"] = [
+                {
+                    "multivariate_feature_option": mv_values[0]["multivariate_feature_option"],
+                    "percentage_allocation": 100.0 if enabled else 0.0,
+                }
+            ]
+
+        if existing_items:
+            fs_id = existing_items[0]["id"]
+            r = self.session.patch(
+                f"{self.api_url}/features/featurestates/{fs_id}/",
+                json=payload,
+                timeout=self.timeout,
+            )
+        else:
+            r = self.session.post(
+                f"{self.api_url}/features/featurestates/",
+                json=payload,
+                timeout=self.timeout,
+            )
+        if not r.ok:
+            raise RuntimeError(f"Flagsmith segment override failed ({r.status_code}): {r.text}")
+        return r.json()
+
+    def remove_segment_override(self, flag_name: str, segment_name: str) -> bool:
+        """Disable and remove a Flagsmith segment override from a feature flag if present."""
+        feature = self.get_feature(flag_name)
+        feature_id = feature["id"]
+        env_id = self.environment_id
+        fs_seg_id = self._segment_override_ids.pop((flag_name, segment_name), None)
+        if fs_seg_id is None:
+            seg = self.get_segment_by_name(segment_name)
+            fs_seg = self._find_feature_segment(feature_id, seg["id"], env_id)
+            if fs_seg is None:
+                return False
+            fs_seg_id = fs_seg["id"]
+        # Disable any associated FeatureState first so Flagsmith invalidates environment cache
+        fs_resp = self.session.get(
+            f"{self.api_url}/features/featurestates/",
+            params={"environment": env_id, "feature": feature_id},
+            timeout=self.timeout,
+        )
+        if fs_resp.ok:
+            data = fs_resp.json()
+            all_fs = data if isinstance(data, list) else data.get("results", [])
+            for item in all_fs:
+                if item.get("feature_segment") == fs_seg_id:
+                    self.session.patch(
+                        f"{self.api_url}/features/featurestates/{item['id']}/",
+                        json={"feature": feature_id, "environment": env_id, "feature_segment": fs_seg_id, "enabled": False},
+                        timeout=self.timeout,
+                    )
+
+        del_resp = self.session.delete(
+            f"{self.api_url}/features/feature-segments/{fs_seg_id}/",
+            timeout=self.timeout,
+        )
+        del_resp.raise_for_status()
+        return True
+
     def rollback_to_zero(self, flag_name: str, reason: str = "") -> Dict[str, Any]:
         """
         Emergency rollback: sets rollout percentage to 0.0 and disables the flag.
@@ -357,3 +500,145 @@ class FlagsmithAdminClient:
             results.extend(page.get("results", []))
             url = page.get("next")  # follow pagination
         return results
+
+    # -------------------------------------------------------------------------
+    # Segment Override endpoints (optional pre-percentage segment stage)
+    # -------------------------------------------------------------------------
+    def get_segment_by_name(self, segment_name: str, project_id: Optional[int] = None) -> Dict[str, Any]:
+        """Find a Flagsmith segment by name within the project."""
+        pid = project_id or self.project_id
+        url = f"{self.api_url}/projects/{pid}/segments/"
+        while url:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            page = resp.json()
+            items = page if isinstance(page, list) else page.get("results", [])
+            for seg in items:
+                if seg.get("name") == segment_name:
+                    return seg
+            url = None if isinstance(page, list) else page.get("next")
+        raise ValueError(f"Segment '{segment_name}' not found in Flagsmith project {pid}")
+
+    def _find_feature_segment(self, feature_id: int, segment_id: int, env_id: int) -> Optional[Dict[str, Any]]:
+        url = f"{self.api_url}/features/feature-segments/"
+        resp = self.session.get(
+            url,
+            params={"environment": env_id, "feature": feature_id},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data if isinstance(data, list) else data.get("results", [])
+        for fs_seg in items:
+            if fs_seg.get("segment") == segment_id and fs_seg.get("feature") == feature_id:
+                return fs_seg
+        return None
+
+    def enable_segment_override(
+        self,
+        flag_name: str,
+        segment_name: str,
+        enabled: bool = True,
+        value: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a Flagsmith segment override on a feature flag."""
+        feature = self.get_feature(flag_name)
+        feature_id = feature["id"]
+        env_id = self.environment_id
+        seg = self.get_segment_by_name(segment_name)
+        segment_id = seg["id"]
+
+        fs_seg = self._find_feature_segment(feature_id, segment_id, env_id)
+        if fs_seg is None:
+            seg_resp = self.session.post(
+                f"{self.api_url}/features/feature-segments/",
+                json={"feature": feature_id, "segment": segment_id, "environment": env_id},
+                timeout=self.timeout,
+            )
+            seg_resp.raise_for_status()
+            fs_seg = seg_resp.json()
+
+        fs_seg_id = fs_seg["id"]
+        self._segment_override_ids[(flag_name, segment_name)] = fs_seg_id
+        # Fetch featurestates for (environment, feature) and match feature_segment in Python
+        existing_resp = self.session.get(
+            f"{self.api_url}/features/featurestates/",
+            params={"environment": env_id, "feature": feature_id},
+            timeout=self.timeout,
+        )
+        existing_resp.raise_for_status()
+        existing_data = existing_resp.json()
+        all_fs = existing_data if isinstance(existing_data, list) else existing_data.get("results", [])
+        existing_items = [item for item in all_fs if item.get("feature_segment") == fs_seg_id]
+
+        payload: Dict[str, Any] = {
+            "feature": feature_id,
+            "environment": env_id,
+            "feature_segment": fs_seg_id,
+            "enabled": enabled,
+        }
+        if value is not None:
+            payload["feature_state_value"] = {"type": "unicode", "string_value": str(value)}
+
+        env_fs = self.get_environment_feature_state(flag_name)
+        mv_values = env_fs.get("multivariate_feature_state_values", [])
+        if mv_values and not existing_items:
+            payload["multivariate_feature_state_values"] = [
+                {
+                    "multivariate_feature_option": mv_values[0]["multivariate_feature_option"],
+                    "percentage_allocation": 100.0 if enabled else 0.0,
+                }
+            ]
+
+        if existing_items:
+            fs_id = existing_items[0]["id"]
+            r = self.session.patch(
+                f"{self.api_url}/features/featurestates/{fs_id}/",
+                json=payload,
+                timeout=self.timeout,
+            )
+        else:
+            r = self.session.post(
+                f"{self.api_url}/features/featurestates/",
+                json=payload,
+                timeout=self.timeout,
+            )
+        if not r.ok:
+            raise RuntimeError(f"Flagsmith segment override failed ({r.status_code}): {r.text}")
+        return r.json()
+
+    def remove_segment_override(self, flag_name: str, segment_name: str) -> bool:
+        """Disable and remove a Flagsmith segment override from a feature flag if present."""
+        feature = self.get_feature(flag_name)
+        feature_id = feature["id"]
+        env_id = self.environment_id
+        fs_seg_id = self._segment_override_ids.pop((flag_name, segment_name), None)
+        if fs_seg_id is None:
+            seg = self.get_segment_by_name(segment_name)
+            fs_seg = self._find_feature_segment(feature_id, seg["id"], env_id)
+            if fs_seg is None:
+                return False
+            fs_seg_id = fs_seg["id"]
+        # Disable any associated FeatureState first so Flagsmith invalidates environment cache
+        fs_resp = self.session.get(
+            f"{self.api_url}/features/featurestates/",
+            params={"environment": env_id, "feature": feature_id},
+            timeout=self.timeout,
+        )
+        if fs_resp.ok:
+            data = fs_resp.json()
+            all_fs = data if isinstance(data, list) else data.get("results", [])
+            for item in all_fs:
+                if item.get("feature_segment") == fs_seg_id:
+                    self.session.patch(
+                        f"{self.api_url}/features/featurestates/{item['id']}/",
+                        json={"feature": feature_id, "environment": env_id, "feature_segment": fs_seg_id, "enabled": False},
+                        timeout=self.timeout,
+                    )
+
+        del_resp = self.session.delete(
+            f"{self.api_url}/features/feature-segments/{fs_seg_id}/",
+            timeout=self.timeout,
+        )
+        del_resp.raise_for_status()
+        return True
