@@ -13,6 +13,7 @@ from guardian.config import RolloutConfig
 
 class RolloutState(str, Enum):
     PENDING = "PENDING"
+    SEGMENT_STAGE = "SEGMENT_STAGE"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     PROMOTED = "PROMOTED"
     ROLLED_BACK = "ROLLED_BACK"
@@ -75,6 +76,19 @@ class RolloutStateMachine:
             raise ValueError(f"Cannot start rollout from state {self.current_state}")
 
         now = now if now is not None else time.time()
+        if getattr(self.config, "segment", None):
+            self.current_stage_index = -1
+            self.current_state = RolloutState.SEGMENT_STAGE.value
+            self.stage_entered_at = now
+            numbers = {
+                "stage_index": -1,
+                "segment": self.config.segment,
+                "target_percentage": 0.0,
+                "timestamp": now,
+            }
+            reason = f"Rollout initiated at Segment Stage (segment: '{self.config.segment}')."
+            return self.current_state, RolloutDecision.ADVANCE, reason, numbers
+
         self.current_stage_index = 0
         self.current_state = RolloutState.stage_name(0)
         self.stage_entered_at = now
@@ -223,6 +237,10 @@ class RolloutStateMachine:
         # 4. Advance Stage
         next_stage_index = self.current_stage_index + 1
         is_final_stage = next_stage_index == len(self.config.stages) - 1
+
+        if self.current_state == RolloutState.SEGMENT_STAGE.value:
+            next_stage_index = 0
+            is_final_stage = len(self.config.stages) == 1
 
         # If next stage is the final stage and approval is required
         if is_final_stage and self.config.require_approval_before_final and not self.is_approved:

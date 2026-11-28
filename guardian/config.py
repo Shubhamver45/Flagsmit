@@ -62,8 +62,13 @@ class RolloutConfig:
     echo_window_seconds: float = 30.0
     reconcile_interval_seconds: float = 10.0
     require_winner: bool = False
+    segment: Optional[str] = None
+    segment_value: Optional[str] = None
 
     def __post_init__(self):
+        if self.segment is not None:
+            cleaned = str(self.segment).strip()
+            object.__setattr__(self, "segment", cleaned or None)
         if not self.flag_name:
             raise ValueError("flag_name must not be empty")
         if not self.stages:
@@ -214,6 +219,8 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
         echo_window_seconds=echo_window_val,
         reconcile_interval_seconds=reconcile_val,
         require_winner=bool(data.get("require_winner", False)),
+        segment=data.get("segment"),
+        segment_value=data.get("segment_value"),
     )
 
 

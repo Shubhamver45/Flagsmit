@@ -644,11 +644,25 @@ class GuardianEngine:
                 )
 
                 if decision in (RolloutDecision.ADVANCE, RolloutDecision.PROMOTED):
-                    self.storage.record_write(flag_name, pct, written_at=now)
-                    self.flagsmith_client.set_percentage_rollout(flag_name, pct)
+                    if new_state == RolloutState.SEGMENT_STAGE.value and rc.segment:
+                        self.storage.record_write(flag_name, 0.0, written_at=now)
+                        self.flagsmith_client.enable_segment_override(
+                            flag_name,
+                            rc.segment,
+                            enabled=True,
+                            value=rc.segment_value,
+                        )
+                    else:
+                        self.storage.record_write(flag_name, pct, written_at=now)
+                        self.flagsmith_client.set_percentage_rollout(flag_name, pct)
                 elif decision == RolloutDecision.ROLLBACK:
                     self.storage.record_write(flag_name, 0.0, written_at=now)
                     self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
+                    if rc.segment:
+                        try:
+                            self.flagsmith_client.remove_segment_override(flag_name, rc.segment)
+                        except Exception as seg_err:
+                            logger.warning(f"Could not remove segment override '{rc.segment}' for '{flag_name}': {seg_err}")
                     # --- Incident Intelligence: record this automated rollback ---
                     try:
                         from guardian.incident import Incident
@@ -882,6 +896,11 @@ class GuardianEngine:
 
         if should_run:
             self.flagsmith_client.rollback_to_zero(flag_name, reason=reason)
+            if rc.segment:
+                try:
+                    self.flagsmith_client.remove_segment_override(flag_name, rc.segment)
+                except Exception as seg_err:
+                    logger.warning(f"Could not remove segment override '{rc.segment}' for '{flag_name}': {seg_err}")
             self.idempotency_manager.mark_executed(
                 flag_name=flag_name,
                 decision=decision.value,
@@ -952,6 +971,8 @@ class GuardianEngine:
             try:
                 self.storage.record_write(fname, 0.0, written_at=time.time())
                 self.flagsmith_client.set_percentage_rollout(fname, 0.0)
+                if rc.segment:
+                    self.flagsmith_client.remove_segment_override(fname, rc.segment)
             except Exception as e:
                 logger.warning(f"Could not reset Flagsmith rollout percentage for '{fname}': {e}")
 
