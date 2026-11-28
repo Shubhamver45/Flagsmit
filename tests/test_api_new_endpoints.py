@@ -220,10 +220,11 @@ def test_open_in_flagsmith_link_safe_and_no_secrets(tmp_path, monkeypatch):
     storage = GuardianStorage(db_path=tmp_path / "fs_link.db")
     mock_client = MagicMock()
     mock_client.get_percentage_rollout.return_value = 0.0
-    mock_client.api_url = "http://localhost:8000/api/v1"
+    mock_client.api_url = "http://flagsmith:8000/api/v1"
     mock_client._project_id = 7
     monkeypatch.setenv("FLAGSMITH_ADMIN_API_KEY", "secret-admin-key-xyz")
     monkeypatch.setenv("FLAGSMITH_ENVIRONMENT_KEY", "env-client-key-xyz")
+    monkeypatch.delenv("GUARDIAN_FLAGSMITH_UI_URL", raising=False)
 
     cfg = RolloutConfig(flag_name="new_checkout", stages=[1.0, 100.0], soak_time_seconds=0)
     engine = GuardianEngine(
@@ -236,11 +237,25 @@ def test_open_in_flagsmith_link_safe_and_no_secrets(tmp_path, monkeypatch):
     app = create_app(engine=engine, api_token="tok")
     client = TestClient(app)
 
-    status_data = client.get("/status").json()
-    ui_url = status_data.get("flagsmith_ui_url")
+    # 1. Unset: no Flagsmith URL in /status and no internal hostname leaked
+    unset_resp = client.get("/status")
+    assert unset_resp.status_code == 200
+    assert "flagsmith_ui_url" not in unset_resp.json()
+    assert "flagsmith:8000" not in unset_resp.text
+
+    # 2. Disallowed scheme (e.g., javascript:): rejected
+    monkeypatch.setenv("GUARDIAN_FLAGSMITH_UI_URL", "javascript:alert(1)")
+    bad_resp = client.get("/status")
+    assert "flagsmith_ui_url" not in bad_resp.json()
+
+    # 3. Set to valid http(s) browser-facing URL: builds link without secrets or internal hostnames
+    monkeypatch.setenv("GUARDIAN_FLAGSMITH_UI_URL", "http://localhost:8000")
+    set_resp = client.get("/status")
+    ui_url = set_resp.json().get("flagsmith_ui_url")
     assert ui_url == "http://localhost:8000/project/7/features"
-    assert "secret-admin-key-xyz" not in ui_url
-    assert "env-client-key-xyz" not in ui_url
+    assert "secret-admin-key-xyz" not in set_resp.text
+    assert "env-client-key-xyz" not in set_resp.text
+    assert "flagsmith:8000" not in set_resp.text
 
     html = client.get("/").text
     assert 'id="open-flagsmith-link"' in html

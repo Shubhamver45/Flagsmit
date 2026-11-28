@@ -219,6 +219,7 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       PROMETHEUS_URL: http://prometheus:9090
+      GUARDIAN_FLAGSMITH_UI_URL: http://localhost:8000
       DEMO_MODE: "1"
       DEMO_SOAK_SECONDS: "5"
       DEMO_FORCE_RECALC: "1"

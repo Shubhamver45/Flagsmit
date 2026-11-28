@@ -33,8 +33,8 @@ Modern engineering teams practicing continuous delivery rely on feature flags to
 ### How is this different?
 | Approach | What Guardian Adds | What Guardian Does Not Do |
 | :--- | :--- | :--- |
-| **vs. Argo Rollouts / Flagger** | **Flagsmith-native**: shifts traffic at the **feature flag** layer (works on any app/VM/container without a service mesh or Ingress controller), gates promotions on **Flagsmith Experimentation + SRM**, and detects out-of-band flag **drift**. | Does **not** perform Kubernetes pod/service-mesh traffic shifting or manage container Deployments. |
-| **vs. Manual Flagsmith Use** | Automates staged canary progression, continuous Prometheus guardrails with fast rollback to 0%, Bayesian/SRM approval gating, and webhook drift alerts. | Does **not** replace Flagsmith itself; it sits beside Flagsmith as a safety controller. |
+| **vs. Argo Rollouts / Flagger** | Both Argo Rollouts and Flagger already provide metric-based analysis and automatic rollback on Kubernetes. Guardian works on **Flagsmith feature flags** instead (no Kubernetes, Ingress, or service mesh needed), adds the **Experimentation + SRM** gate, and detects **out-of-band flag changes** (drift). | Does **not** shift Kubernetes pod/Ingress/service-mesh traffic or manage container Deployments. |
+| **vs. Manual Flagsmith Use** | Automates staged percentage progression, continuous Prometheus guardrails with rollback to 0%, Bayesian/SRM approval gating, and webhook drift detection. | Does **not** replace Flagsmith; it runs alongside Flagsmith as a rollout controller. |
 
 ---
 

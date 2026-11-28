@@ -1164,21 +1164,14 @@ class GuardianEngine:
                 }
 
             eligible, block_reason = self.check_approval_eligibility(flag_name=fname)
-            raw_api_url = (
-                getattr(self.flagsmith_client, "api_url", None)
-                or os.environ.get("FLAGSMITH_URL", "")
-            ).rstrip("/")
-            ui_base = raw_api_url[:-7] if raw_api_url.endswith("/api/v1") else raw_api_url
-            if "://api.flagsmith.com" in ui_base:
-                ui_base = ui_base.replace("://api.flagsmith.com", "://app.flagsmith.com", 1)
+            raw_ui_url = os.environ.get("GUARDIAN_FLAGSMITH_UI_URL", "").strip().rstrip("/")
             proj_id = rc.project_id or getattr(self.flagsmith_client, "_project_id", None)
-            if ui_base.startswith(("http://", "https://")):
-                flagsmith_ui_url = f"{ui_base}/project/{int(proj_id)}/features" if proj_id else f"{ui_base}/"
+            if raw_ui_url.startswith(("http://", "https://")):
+                flagsmith_ui_url = f"{raw_ui_url}/project/{int(proj_id)}/features" if proj_id else f"{raw_ui_url}/"
             else:
                 flagsmith_ui_url = None
             rollout_data = {
                 "flag_name": fname,
-                "flagsmith_ui_url": flagsmith_ui_url,
                 "state": sm.current_state,
                 "percentage": sm.current_percentage,
                 "stage_index": sm.current_stage_index,
@@ -1192,6 +1185,8 @@ class GuardianEngine:
                 "guardrails": guardrail_reports,
                 "experiment": experiment_summary,
             }
+            if flagsmith_ui_url:
+                rollout_data["flagsmith_ui_url"] = flagsmith_ui_url
             rollouts_report[fname] = rollout_data
 
         target_flag = flag_name or self.config.flag_name
@@ -1203,10 +1198,9 @@ class GuardianEngine:
             timeline_entries = list(reversed(self.storage.get_audit_entries(order="DESC", limit=20)))
 
         # Build combined response
-        return {
+        resp = {
             "rollouts": rollouts_report,
             "flag_name": primary_report["flag_name"],
-            "flagsmith_ui_url": primary_report["flagsmith_ui_url"],
             "state": primary_report["state"],
             "percentage": primary_report["percentage"],
             "stage_index": primary_report["stage_index"],
@@ -1223,3 +1217,6 @@ class GuardianEngine:
             "timeline": timeline_entries,
             "recent_audit_entries": timeline_entries[-5:] if timeline_entries else [],
         }
+        if primary_report.get("flagsmith_ui_url"):
+            resp["flagsmith_ui_url"] = primary_report["flagsmith_ui_url"]
+        return resp
