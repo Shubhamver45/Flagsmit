@@ -1208,6 +1208,8 @@ class GuardianEngine:
             }
             if flagsmith_ui_url:
                 rollout_data["flagsmith_ui_url"] = flagsmith_ui_url
+            if rc.segment:
+                rollout_data["segment"] = rc.segment
             rollouts_report[fname] = rollout_data
 
         target_flag = flag_name or self.config.flag_name
@@ -1240,4 +1242,6 @@ class GuardianEngine:
         }
         if primary_report.get("flagsmith_ui_url"):
             resp["flagsmith_ui_url"] = primary_report["flagsmith_ui_url"]
+        if primary_report.get("segment"):
+            resp["segment"] = primary_report["segment"]
         return resp

@@ -734,6 +734,7 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
       const stages = data.stages || [1, 5, 25, 100];
       const steps = [
         { label: '0%', state: 'PENDING' },
+        ...((data.segment || data.state === 'SEGMENT_STAGE') ? [{ label: 'Seg', state: 'SEGMENT_STAGE' }] : []),
         ...stages.slice(0, -1).map((pct, idx) => ({ label: pct + '%', state: 'STAGE_' + (idx + 1) })),
         { label: 'Approval', state: 'AWAITING_APPROVAL' },
         { label: stages[stages.length - 1] + '%', state: 'PROMOTED' },
@@ -753,6 +754,8 @@ STATUS_PAGE_HTML = """<!DOCTYPE html>
         } else if (data.state === 'PROMOTED') {
           item.classList.add('completed');
         } else if (s.state === 'PENDING' && data.state !== 'PENDING') {
+          item.classList.add('completed');
+        } else if (s.state === 'SEGMENT_STAGE' && data.state !== 'PENDING' && data.state !== 'SEGMENT_STAGE') {
           item.classList.add('completed');
         }
 

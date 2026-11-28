@@ -153,3 +153,61 @@ def test_flagsmith_client_segment_override_http_calls():
     assert removed is True
     mock_session.delete.assert_called_once()
     assert mock_session.delete.call_args.args[0].endswith("/features/feature-segments/501/")
+
+
+def test_segment_stage_echo_immunity_and_restart_recovery(tmp_path):
+    db_path = tmp_path / "seg_restart.db"
+    storage1 = GuardianStorage(db_path=db_path)
+    mock_client = MagicMock()
+    mock_client.get_percentage_rollout.return_value = 0.0
+
+    cfg = RolloutConfig(
+        flag_name="new_checkout",
+        stages=[1, 25, 100],
+        soak_time_seconds=60,
+        segment="internal-team",
+        segment_value="new_flow",
+    )
+    engine1 = GuardianEngine(
+        config=cfg,
+        flagsmith_client=mock_client,
+        metric_provider=lambda: {},
+        storage=storage1,
+        skip_startup_reconciliation=True,
+    )
+    engine1.tick()
+    assert engine1.state_machines["new_checkout"].current_state == "SEGMENT_STAGE"
+    assert engine1.get_status()["segment"] == "internal-team"
+
+    # Webhook echo arriving right after Guardian's own segment write must NOT trigger DRIFT
+    wh_res = engine1.handle_flagsmith_webhook({
+        "event_type": "FLAG_UPDATED",
+        "data": {
+            "new_state": {
+                "feature": {"name": "new_checkout"},
+                "enabled": True,
+                "multivariate_feature_state_values": [{"percentage_allocation": 0.0}],
+            },
+            "changed_by": "guardian-bot",
+        },
+    })
+    assert engine1.drift_flags["new_checkout"]["detected"] is False
+    assert wh_res.get("drift_detected") is not True
+    storage1.close()
+
+    # Restart Guardian with the same SQLite DB: recovers to SEGMENT_STAGE and does not duplicate overrides
+    storage2 = GuardianStorage(db_path=db_path)
+    engine2 = GuardianEngine(
+        config=cfg,
+        flagsmith_client=mock_client,
+        metric_provider=lambda: {},
+        storage=storage2,
+        skip_startup_reconciliation=False,
+    )
+    assert engine2.state_machines["new_checkout"].current_state == "SEGMENT_STAGE"
+    assert engine2.drift_flags["new_checkout"]["detected"] is False
+    # Calling tick() while soaking in SEGMENT_STAGE must NOT call enable_segment_override again
+    mock_client.enable_segment_override.reset_mock()
+    engine2.tick()
+    mock_client.enable_segment_override.assert_not_called()
+    storage2.close()
