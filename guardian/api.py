@@ -603,4 +603,61 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Flagsmith error: {type(e).__name__}")
 
+    # -------------------------------------------------------------------------
+    # Push Metrics Ingestion endpoint (optional Prometheus-free guardrail source)
+    # -------------------------------------------------------------------------
+    @app.post(
+        "/metrics/ingest",
+        dependencies=[Depends(rate_limit_write_endpoints), Depends(verify_write_token)],
+    )
+    async def ingest_metrics(request: Request) -> Dict[str, Any]:
+        """Ingest pushed request/error counts for rolling-window push guardrails."""
+        raw_body = await request.body()
+        if len(raw_body) > 65536:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Request entity too large. Maximum allowed size is 65536 bytes.",
+            )
+        try:
+            payload = json.loads(raw_body)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload")
+
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="JSON body must be an object")
+
+        metric = payload.get("metric")
+        requests_count = payload.get("requests")
+        errors_count = payload.get("errors")
+        timestamp = payload.get("timestamp")
+        if timestamp is not None and (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="timestamp must be a number")
+
+        provider = getattr(engine, "metric_provider", None)
+        push_source = None
+        if hasattr(provider, "_sources") and isinstance(provider._sources, dict):
+            push_source = provider._sources.get("push")
+            if push_source is None and hasattr(provider, "register_source"):
+                from guardian.metrics.push import PushMetricSource
+                push_source = PushMetricSource()
+                provider.register_source("push", push_source)
+        elif hasattr(provider, "ingest"):
+            push_source = provider
+
+        if push_source is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Push metric source is not enabled on this engine",
+            )
+
+        try:
+            return push_source.ingest(
+                metric=metric,
+                requests=requests_count,
+                errors=errors_count,
+                timestamp=timestamp,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     return app

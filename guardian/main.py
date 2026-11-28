@@ -23,6 +23,7 @@ from guardian.config import GuardianConfig, RolloutConfig, load_config
 from guardian.audit_log import AuditLogger
 from guardian.flagsmith_client import FlagsmithAdminClient
 from guardian.metrics.prometheus import PrometheusMetricSource
+from guardian.metrics.push import PushMetricSource
 from guardian.metrics.flagsmith_exp import FlagsmithExperimentMetricSource
 from guardian.metrics.registry import CompositeMetricProvider
 from guardian.storage import GuardianStorage
@@ -180,6 +181,7 @@ def build_engine(
 
     provider = CompositeMetricProvider()
     provider.register_source("prometheus", PrometheusMetricSource(prometheus_url=prometheus_url))
+    provider.register_source("push", PushMetricSource())
     provider.register_source(
         "flagsmith_experiment",
         FlagsmithExperimentMetricSource(
