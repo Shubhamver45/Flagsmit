@@ -26,6 +26,12 @@ class Guardrail:
     description: str = ""
     require_winner: bool = False
     unit: str = "%"
+    metric: Optional[str] = None
+    window_seconds: float = 60.0
+
+    def __post_init__(self):
+        if self.window_seconds <= 0:
+            raise ValueError("window_seconds must be positive")
 
     def evaluate(self, current_value: float) -> bool:
         """
@@ -181,6 +187,8 @@ def _parse_single_rollout(data: Dict[str, Any]) -> RolloutConfig:
             description=g.get("description", ""),
             require_winner=bool(g.get("require_winner", False)),
             unit=g.get("unit") if g.get("unit") is not None else ("ms" if "latency" in g["name"].lower() else "%"),
+            metric=g.get("metric"),
+            window_seconds=float(g.get("window_seconds", 60.0)),
         )
         for g in raw_guardrails
     ]
